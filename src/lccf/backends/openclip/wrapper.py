@@ -2,8 +2,10 @@
 from typing import Any, Iterable, List, Optional
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
+import math
 from open_clip.transformer import ResidualAttentionBlock
+from einops import rearrange
 
 # CopyAttrWrapper is defined in lccf.wrap
 from ...wrap import CopyAttrWrapper
@@ -25,10 +27,64 @@ class OpenCLIPWrapper(CopyAttrWrapper):
     def __init__(self, model: Any, layer_indices: Optional[List[int]] = None, include_private: bool = False):
         # The copying behavior is done by the parent class CopyAttrWrapper (tiling the model's attributes)
         super().__init__(model, layer_indices=layer_indices, include_private=include_private)
+        self.tmp = None
+        # self.norm_mean = []
+        # self.norm_std = []
+        self.result = []
+        self.maps = []
+
+        # Register hooks to the specified layers to capture attention outputs
         for idx in layer_indices:
             block = self.visual.transformer.resblocks[idx]
-            block.ls_1.register_forward_hook(lambda module, input, output, idx=idx: print(f"Forward hook called at block {idx}, ls_1 input shape: {input[0].shape}, output shape: {output.shape}"))    
-    
+           
+            # block.attn.register_forward_hook(lambda module, input, output: self.attn_out.append(output[0].detach()))
+            # block.ln_2.register_forward_hook(lambda module, input, output: self.norm_mean.append(input[0].mean(dim=-1).detach()))
+            # block.ln_2.register_forward_hook(lambda module, input, output: self.norm_std.append(input[0].std(dim=-1).detach()))
+
+            # block.attn.register_forward_hook(lambda module, input, output: self.result.append(output[0].detach()))
+            # block.ln_2.register_forward_hook(lambda module, input, output: self.calc_list(self.result, idx, input[0].std(dim=-1).detach()))
+            block.attn.register_forward_hook(self._save_attn_output)    # (n, b, d)
+            block.ln_2.register_forward_hook(self._aggregate_ln)        # (n, b, d)
+            block.mlp.c_fc.register_forward_hook(self._aggregate_c_fc)
+            block.mlp.c_proj.register_forward_hook(self._aggregate_c_proj)  # (n, b, d)
+            block.register_forward_hook(self._finalize_hook)    # (n, b, d)
+
+
+    def _save_attn_output(self, module, input, output):
+        self.tmp = output[0].detach()
+    def _aggregate_ln(self, module, input, output):
+        std = input[0].std(dim=-1).detach()
+        self.tmp /= rearrange(std, 'n b -> n b 1')
+        self.tmp *= module.weight
+    def _aggregate_c_fc(self, module, input, output):
+        self.tmp @= module.weight.T
+        a = math.sqrt(2.0 / math.pi)
+        b = 0.044715
+        x_ = self.tmp
+        inner = a * (x_ + b * x_ * x_ * x_)
+        t = torch.tanh(inner)
+        sech2 = 1.0 - t * t  # = (1 - tanh^2)
+        d_inner_dx = a * (1.0 + 3.0 * b * x_ * x_)
+        grad = 0.5 * (1.0 + t) + 0.5 * x_ * (sech2 * d_inner_dx)
+        self.tmp *= grad
+    def _aggregate_c_proj(self, module, input, output):
+        self.tmp @= module.weight.T
+    def _finalize_hook(self, module, input, output):
+        std = output[0, ...].std(dim=-1).detach()
+        self.tmp /= rearrange(std, 'b -> 1 b 1')
+        self.tmp *= self.visual.ln_post.weight
+        self.tmp @= self.visual.proj
+        self.tmp = F.normalize(self.tmp, dim=-1)
+        self.result.append(self.tmp)
+
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor):
+        """_summary_
+            Call this function before foward.
+        Args:
+            concept_vectors (torch.Tensor): [batch_size, dim]
+        """
+        for res in self.result:
+            self.maps.append(torch.einsum('n b d, m d -> n b m', res, concept_vectors))
 
     def _get_device_for_call(self, device: Optional[str] = None):
         # Try to get the device from the original model's parameters, otherwise use the passed device or cpu
