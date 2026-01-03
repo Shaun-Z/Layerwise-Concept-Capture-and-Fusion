@@ -1,0 +1,20 @@
+[project]
+name = "lccf-torch"
+version = "0.0.1"
+description = "Concept decomposition toolkit."
+authors = [
+  { name="Shaun Z", email="xiangyuzhou823@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file="LICENSE" }
+
+dependencies = [
+]
+
+[project.urls]
+Homepage = "https://github.com/Shaun-Z/Layerwise-Concept-Capture-and-Fusion"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
