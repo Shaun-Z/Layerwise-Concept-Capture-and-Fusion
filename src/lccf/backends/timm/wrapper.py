@@ -1,7 +1,6 @@
 # src/lccf/backends/timm/wrapper.py
 from typing import Any, List, Optional
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import math
 from einops import rearrange
