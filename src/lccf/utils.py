@@ -7,22 +7,22 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 import matplotlib.pyplot as plt
-from open_clip import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 
 from einops import rearrange
 
-def _to_pil(image: torch.Tensor | Image.Image, target_wh: tuple[int, int]) -> Image.Image:
+def _to_pil(image: torch.Tensor | Image.Image, target_wh: tuple[int, int], mean: tuple[float, float, float], std: tuple[float, float, float]) -> Image.Image:
     if isinstance(image, Image.Image):
         return image.resize(target_wh)
     assert image.ndim == 3  # [channel, height, width]
-    image_denormed = (image.detach().cpu() * torch.tensor(OPENAI_DATASET_STD)[:, None, None]) \
-                    + torch.tensor(OPENAI_DATASET_MEAN)[:, None, None]
+    image_denormed = (image.detach().cpu() * torch.tensor(std)[:, None, None]) \
+                    + torch.tensor(mean)[:, None, None]
     arr = (image_denormed.permute(1, 2, 0).numpy() * 255).astype("uint8")
     return Image.fromarray(arr).resize(target_wh)
 
 def visualize(
     images: torch.Tensor | Image.Image,
     heatmaps: torch.Tensor,
+    mean_std: tuple[tuple[float, float, float], tuple[float, float, float]],
     alpha: float = 0.7,
     text_prompts: Optional[List[str]] = None,
     save_dir: Optional[Path] = None,
@@ -45,7 +45,7 @@ def visualize(
 
     if text_prompts is None:
         text_prompts = [str(i) for i in range(num_concepts)]
-    pil_imgs = [_to_pil(img, (H, W)) for img in images]
+    pil_imgs = [_to_pil(img, (H, W), mean=mean_std[0], std=mean_std[1]) for img in images]
     img_cvs = [cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR) for img in pil_imgs]
     heatmaps_np = (heatmaps.detach().cpu().numpy() * 255).astype("uint8")   # [N, num_concepts, 1, H, W]
     # heat_maps = [cv2.applyColorMap(hm, cv2.COLORMAP_JET) for hm in heatmaps_np]
@@ -83,6 +83,7 @@ def visualize(
 def visualize_layerwise_maps(
         images: torch.Tensor,
         heatmaps: List[torch.Tensor],
+        mean_std: tuple[tuple[float, float, float], tuple[float, float, float]],
         alpha: float = 0.7,
         text_prompts: Optional[List[str]] = None,
         save_dir: Optional[Path] = None,
@@ -121,7 +122,7 @@ def visualize_layerwise_maps(
         squeeze=False)
     axes = np.atleast_1d(axes)
     for i in range(num_images):
-        pil_img = _to_pil(images[i], (H, W))
+        pil_img = _to_pil(images[i], (H, W), mean=mean_std[0], std=mean_std[1])
         img_cv = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         for j in range(num_concepts):
             axes[i*num_concepts + j, 0].imshow(pil_img)
