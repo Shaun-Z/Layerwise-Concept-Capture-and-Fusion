@@ -5,12 +5,9 @@ Timm ViT-B-16 Example Script
 This script demonstrates how to use the LCCF (Layerwise Concept Capture and Fusion) 
 library with a timm-implemented ViT-B-16 model.
 
-Note: Unlike OpenCLIP/CLIP models which have text encoders for generating concept vectors,
-timm models are pure vision models. For this example, we demonstrate with random concept
-vectors. In practice, you would obtain concept vectors from:
-1. A separate text encoder (e.g., CLIP text encoder)
-2. Pre-computed concept embeddings
-3. Learned concept vectors specific to your task
+Unlike OpenCLIP/CLIP models which have text encoders for generating concept vectors,
+timm models are pure vision models. This example uses concept vectors extracted from
+the classification head weights corresponding to ImageNet classes (e.g., "tabby cat").
 """
 
 # %%
@@ -39,15 +36,21 @@ preprocess = create_transform(**config)
 layer_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 
 # %%
-# For demonstration, we use random concept vectors
-# In practice, these would come from a text encoder or be learned
-concept_names = ["concept_1", "concept_2", "concept_3"]
-num_concepts = len(concept_names)
-embed_dim = model.embed_dim  # 768 for ViT-B-16
+# Extract concept vectors from the classification head
+# The head weight matrix has shape [num_classes, embed_dim] = [1000, 768]
+# Each row is the weight vector for a class, which can be used as a concept vector
 
-# Create random normalized concept vectors
-torch.manual_seed(42)  # For reproducibility
-concept_vectors = torch.randn(num_concepts, embed_dim)
+# ImageNet class indices for concepts of interest
+# Class 281: tabby cat
+# Class 285: Egyptian cat  
+# Class 333: hamster
+TABBY_CAT_IDX = 281
+
+concept_names = ["tabby cat"]
+
+# Extract concept vector for tabby cat from the classification head
+# The weight vector for class i is model.head.weight[i]
+concept_vectors = model.head.weight[TABBY_CAT_IDX].unsqueeze(0).detach()  # [1, 768]
 concept_vectors = F.normalize(concept_vectors, dim=-1)
 
 # %%
