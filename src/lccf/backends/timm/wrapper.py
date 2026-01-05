@@ -127,7 +127,7 @@ class TimmWrapper(CopyAttrWrapper):
             normed_cls = rearrange(self.normed_clss[i], 'b 1 d -> 1 b d')
             weight = torch.einsum('n b d, m d -> n b m', normed_cls, concept_vectors)
             prod = prod * weight
-            map = torch.clamp(prod.mean(dim=0, keepdim=True) - prod, min=0.)  # negative gradient
+            map = torch.clamp(prod - prod.mean(dim=0, keepdim=True), min=0.)  # negative gradient
             map = rearrange(map[1:, ...], '(h w) b m -> h w b m', h=h, w=w)  # Exclude CLS token
             self.maps.append(map)
 

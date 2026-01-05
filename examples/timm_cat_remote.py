@@ -20,17 +20,19 @@ import timm
 from timm.data import resolve_data_config
 from timm.data.transforms_factory import create_transform
 import matplotlib.pyplot as plt
-from lccf.detect import detect_and_wrap
+from lccf.detect import detect_and_wrap, wrap_timm_preprocess
 from lccf.utils import visualize, visualize_layerwise_maps
 
 # %%
 # Create timm ViT-B-16 model
-model = timm.create_model('vit_base_patch16_224', pretrained=False)
+model = timm.create_model('vit_base_patch16_224', pretrained=True)
 model.eval()
 
 # Get the preprocessing transform for the model
 config = resolve_data_config({}, model=model)
 preprocess = create_transform(**config)
+# Wrap the preprocess to accept arbitrary image size
+preprocess = wrap_timm_preprocess(preprocess, image_size=224)
 
 # %%
 layer_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]

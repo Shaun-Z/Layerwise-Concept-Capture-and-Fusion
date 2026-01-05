@@ -5,13 +5,13 @@ import numpy as np
 import torch
 import open_clip
 import matplotlib.pyplot as plt
-from lccf.detect import detect_and_wrap, wrap_preprocess
+from lccf.detect import detect_and_wrap, wrap_clip_preprocess
 from lccf.utils import visualize, visualize_layerwise_maps
 
 # %%
 model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-16', pretrained='laion2b_s34b_b88k')
 model.eval()
-preprocess = wrap_preprocess(preprocess, image_size=224)
+preprocess = wrap_clip_preprocess(preprocess, image_size=224)
 tokenizer = open_clip.get_tokenizer(model_name='ViT-B-16')
 
 # %%
