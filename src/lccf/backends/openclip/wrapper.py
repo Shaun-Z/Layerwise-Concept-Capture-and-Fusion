@@ -9,8 +9,6 @@ from einops import rearrange
 # CopyAttrWrapper is defined in lccf.wrap
 from ...wrap import CopyAttrWrapper
 
-from ...types import ResAttnBlk
-
 """
 Description:
  - The wrapper accepts an already constructed open_clip model (e.g., via the model, preprocess = open_clip.create_model_and_transforms("ViT-B-32"). Then pass in model (or model.visual) and wrap)
@@ -36,13 +34,7 @@ class OpenCLIPWrapper(CopyAttrWrapper):
         # Register hooks to the specified layers to capture attention outputs
         for idx in layer_indices:
             block = self.visual.transformer.resblocks[idx]
-           
-            # block.attn.register_forward_hook(lambda module, input, output: self.attn_out.append(output[0].detach()))
-            # block.ln_2.register_forward_hook(lambda module, input, output: self.norm_mean.append(input[0].mean(dim=-1).detach()))
-            # block.ln_2.register_forward_hook(lambda module, input, output: self.norm_std.append(input[0].std(dim=-1).detach()))
 
-            # block.attn.register_forward_hook(lambda module, input, output: self.result.append(output[0].detach()))
-            # block.ln_2.register_forward_hook(lambda module, input, output: self.calc_list(self.result, idx, input[0].std(dim=-1).detach()))
             block.attn.register_forward_hook(self._save_attn_output)    # (n, b, d)
             block.ln_2.register_forward_hook(self._aggregate_ln)        # (n, b, d)
             block.mlp.c_fc.register_forward_hook(self._aggregate_c_fc)
@@ -97,8 +89,9 @@ class OpenCLIPWrapper(CopyAttrWrapper):
             weight = torch.einsum('n b d, m d -> n b m', self.normed_clss[i], concept_vectors)
             # print(weight)
             prod = prod * weight
-            map = rearrange(prod[1:,...], '(h w) b m -> h w b m', h=h, w=w)  # Exclude CLS token
-            self.maps.append(-map)
+            map = torch.clamp(prod.mean(dim=0, keepdim=True) - prod, min=0.)    # negative gradient
+            map = rearrange(map[1:,...], '(h w) b m -> h w b m', h=h, w=w)  # Exclude CLS token
+            self.maps.append(map)
 
     def aggregate_layerwise_maps(self):
         """Aggregate the stored maps across all requested layers.
@@ -108,7 +101,6 @@ class OpenCLIPWrapper(CopyAttrWrapper):
         if not self.maps:
             raise ValueError("No attention maps stored. Please run a forward pass and compute dot_concept_vectors first.")
         maps = torch.stack(self.maps, dim=0)
-        maps = torch.clamp(maps - maps.mean(dim=(1, 2), keepdim=True), min=0.)
         maps = torch.einsum('l h w b m ->  h w b m', maps)
         maps = rearrange(maps, 'h w b m -> b m h w')
         

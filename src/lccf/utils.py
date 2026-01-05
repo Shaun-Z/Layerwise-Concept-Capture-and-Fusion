@@ -4,9 +4,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 import matplotlib.pyplot as plt
 from open_clip import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
+
+from einops import rearrange
 
 def _to_pil(image: torch.Tensor | Image.Image, target_wh: tuple[int, int]) -> Image.Image:
     if isinstance(image, Image.Image):
@@ -28,7 +31,7 @@ def visualize(
     """
     Overlay heatmaps on the input image.
     Args:
-        image: PIL or normalized tensor [C,H,W] or [1,C,H,W]
+        images: PIL or normalized tensor [C,H,W] or [1,C,H,W]
         heatmaps: [N, H, W] or [1,N,H,W] tensor in [0,1]
         alpha: overlay strength
         text_prompts: optional titles per heatmap
@@ -49,7 +52,7 @@ def visualize(
     # overlays = [(1 - alpha) * img_cv + alpha * hm for hm in heat_maps]
     fig, axes = plt.subplots(num_images,
                              1 + heatmaps_np.shape[1],
-                             figsize=(4 * (1 + heatmaps_np.shape[1]), 4),
+                             figsize=(4 * (1 + num_concepts), 4),
                              squeeze=False)
     axes = np.atleast_1d(axes)
     for i, (pil_img, img_cv) in enumerate(zip(pil_imgs, img_cvs)):
@@ -73,4 +76,72 @@ def visualize(
         # Image.fromarray(ov_rgb.astype("uint8")).save(out_path)
         plt.savefig(out_path)
         plt.close()
+    else:
+        plt.show()
     return fig
+
+def visualize_layerwise_maps(
+        images: torch.Tensor,
+        heatmaps: List[torch.Tensor],
+        alpha: float = 0.7,
+        text_prompts: Optional[List[str]] = None,
+        save_dir: Optional[Path] = None,
+        title: Optional[str] = None
+    ):
+    """Visualize the stored maps across all requested layers.
+    Args:
+        images: Normalized tensor [B,C,H,W]
+        heatmaps: [H, W, B, M] * num_layers
+        alpha: overlay strength
+        text_prompts: optional titles per heatmap
+        save_dir: optional directory to save pngs
+        title: optional title for the original image
+    """
+    assert images.ndim == 4
+    H, W = images.shape[-2], images.shape[-1]
+    scale = H // heatmaps[0].shape[0]
+    heatmaps = [rearrange(hm, 'h w b m -> b m h w') for hm in heatmaps]
+    heatmaps = [F.interpolate(hm, scale_factor=scale, mode='bilinear') for hm in heatmaps]
+    heatmaps = torch.stack(heatmaps, dim=0)  # [num_layers, B, M, H, W]
+
+    assert heatmaps.ndim == 5
+    assert heatmaps.shape[1] == images.shape[0]  # batch size
+    
+    num_images = heatmaps.shape[1]
+    num_concepts = heatmaps.shape[2]
+    num_layers = heatmaps.shape[0]
+
+    heatmaps = (heatmaps - heatmaps.min()) / (heatmaps.max() - heatmaps.min() + 1e-8)
+    heatmaps_np = (heatmaps.detach().cpu().numpy() * 255).astype("uint8")  
+
+    fig, axes = plt.subplots(
+        num_images*num_concepts,
+        num_layers+1,
+        figsize=(4*(1 + num_layers), 4*num_images*num_concepts),
+        squeeze=False)
+    axes = np.atleast_1d(axes)
+    for i in range(num_images):
+        pil_img = _to_pil(images[i], (H, W))
+        img_cv = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        for j in range(num_concepts):
+            axes[i*num_concepts + j, 0].imshow(pil_img)
+            axes[i*num_concepts + j, 0].axis("off")
+            if text_prompts is not None and j < len(text_prompts):
+                axes[i*num_concepts + j, 0].set_title(str(text_prompts[j]))
+            for k in range(num_layers):
+                hm = heatmaps_np[k, i, j, :, :][:, :, None] # [H, W, 1]
+                hm_color = cv2.applyColorMap(hm, cv2.COLORMAP_JET)
+                overlay = (1 - alpha) * img_cv + alpha * hm_color
+                ov_rgb = cv2.cvtColor(overlay.astype("uint8"), cv2.COLOR_BGR2RGB)
+                axes[i*num_concepts + j, k + 1].imshow(ov_rgb)
+                axes[i*num_concepts + j, k + 1].axis("off")
+                axes[i*num_concepts + j, k + 1].set_title(f"Layer {k}")
+    plt.tight_layout()
+    if save_dir:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        out_path = save_dir / f"heatmap_{title}.png"
+        # Image.fromarray(ov_rgb.astype("uint8")).save(out_path)
+        plt.savefig(out_path)
+        plt.close()
+    else:
+        plt.show()

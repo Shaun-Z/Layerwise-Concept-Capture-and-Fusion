@@ -1,7 +1,7 @@
 
-# 统一安全导入可能需要用于 isinstance 的类型
+# Unified safe import may require types for isinstance
 try:
-    # timm VisionTransformer (位置可能随 timm 版本不同)
+    # timm VisionTransformer (location may vary with timm version)
     from timm.models.vision_transformer import VisionTransformer as TimmViT
 except Exception:
     TimmViT = tuple()  # empty tuple -> isinstance(..., ()) is always False
@@ -13,7 +13,7 @@ except Exception:
     TorchViT = tuple()
 
 try:
-    # open_clip 的 VisionTransformer（路径可能不同）
+    # open_clip VisionTransformer (location may vary)
     from open_clip.model import VisionTransformer as OpenCLIPViT
 except Exception:
     OpenCLIPViT = tuple()
