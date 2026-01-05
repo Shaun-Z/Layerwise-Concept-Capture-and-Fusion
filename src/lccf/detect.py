@@ -64,3 +64,15 @@ def wrap_timm_preprocess(preprocess, image_size=224):
         Resize((image_size, image_size), interpolation=InterpolationMode.BICUBIC),
         *preprocess.transforms[-2:],  # skip the first resize
     ])
+
+def wrap_torchvision_preprocess(preprocess, image_size=224):
+    """
+    Modify torchvision preprocessing to accept arbitrary image size.
+    Args:
+        preprocess: original torchvision preprocess transform
+        image_size: target image size (square)
+    """
+    return Compose([
+        Resize((image_size, image_size), interpolation=InterpolationMode.BICUBIC),
+        *preprocess.transforms[-2:],  # ToTensor and Normalize
+    ])
