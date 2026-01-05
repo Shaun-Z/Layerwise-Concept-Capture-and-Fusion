@@ -7,6 +7,7 @@ import open_clip
 import matplotlib.pyplot as plt
 from lccf.detect import detect_and_wrap, wrap_clip_preprocess
 from lccf.utils import visualize, visualize_layerwise_maps
+from open_clip import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 
 # %%
 model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-16', pretrained='laion2b_s34b_b88k')
@@ -44,7 +45,7 @@ wrapper.dot_concept_vectors(text_embeddings)
 maps = torch.stack(wrapper.maps, dim=0)  # (num_layers, H, W, B, num_concepts)
 
 # %%
-visualize_layerwise_maps(image, wrapper.maps, text_prompts=prompts)
+visualize_layerwise_maps(image, wrapper.maps, text_prompts=prompts, mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD))
 
 # %%
 maps_aggregated = wrapper.aggregate_layerwise_maps()
@@ -53,4 +54,4 @@ maps_aggregated = wrapper.aggregate_layerwise_maps()
 maps_aggregated.ndim
 
 # %%
-visualize(image, maps_aggregated, text_prompts=prompts)
+visualize(image, maps_aggregated, text_prompts=prompts, mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD))

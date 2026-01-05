@@ -1,6 +1,6 @@
 # src/my_transformers/detect.py
 from typing import Optional, List, Any
-from torchvision.transforms import Compose, Resize, InterpolationMode
+from torchvision.transforms import Compose, Resize, InterpolationMode, Normalize, ToTensor
 from .types import TimmViT, TorchViT, OpenCLIPViT
 from .wrap import CopyAttrWrapper
 # Import the specific backend wrapper (if it exists)
@@ -74,5 +74,7 @@ def wrap_torchvision_preprocess(preprocess, image_size=224):
     """
     return Compose([
         Resize((image_size, image_size), interpolation=InterpolationMode.BICUBIC),
-        *preprocess.transforms[-2:],  # ToTensor and Normalize
+        # *preprocess.transforms[-2:],  # ToTensor and Normalize
+        ToTensor(),
+        Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])

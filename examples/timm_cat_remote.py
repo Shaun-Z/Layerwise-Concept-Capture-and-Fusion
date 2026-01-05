@@ -81,7 +81,7 @@ print(f"Maps shape: {maps.shape}")
 
 # %%
 # Visualize layerwise maps
-visualize_layerwise_maps(image, wrapper.maps, text_prompts=concept_names)
+visualize_layerwise_maps(image, wrapper.maps, text_prompts=concept_names, mean_std=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
 
 # %%
 # Aggregate maps across layers
@@ -90,4 +90,4 @@ print(f"Aggregated maps shape: {maps_aggregated.shape}")
 
 # %%
 # Visualize aggregated maps
-visualize(image, maps_aggregated, text_prompts=concept_names)
+visualize(image, maps_aggregated, text_prompts=concept_names, mean_std=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))

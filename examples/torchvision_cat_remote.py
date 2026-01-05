@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from torchvision.models import vit_b_16, ViT_B_16_Weights
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 import matplotlib.pyplot as plt
-from lccf.detect import detect_and_wrap
+from lccf.detect import detect_and_wrap, wrap_torchvision_preprocess
 from lccf.utils import visualize, visualize_layerwise_maps
 
 # %%
@@ -34,6 +34,8 @@ preprocess = Compose([
     ToTensor(),
     Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
+# Wrap the preprocess to accept arbitrary image size
+preprocess = wrap_torchvision_preprocess(preprocess, image_size=224)
 
 # %%
 layer_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
@@ -82,7 +84,7 @@ print(f"Maps shape: {maps.shape}")
 
 # %%
 # Visualize layerwise maps
-visualize_layerwise_maps(image, wrapper.maps, text_prompts=concept_names)
+visualize_layerwise_maps(image, wrapper.maps, text_prompts=concept_names, mean_std=((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)))
 
 # %%
 # Aggregate maps across layers
@@ -91,4 +93,4 @@ print(f"Aggregated maps shape: {maps_aggregated.shape}")
 
 # %%
 # Visualize aggregated maps
-visualize(image, maps_aggregated, text_prompts=concept_names)
+visualize(image, maps_aggregated, text_prompts=concept_names, mean_std=((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)))
