@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from open_clip.transformer import ResidualAttentionBlock
 from einops import rearrange
 
 # CopyAttrWrapper is defined in lccf.wrap
@@ -32,6 +31,7 @@ class OpenCLIPWrapper(CopyAttrWrapper):
         # self.norm_std = []
         self.result = []
         self.maps = []
+        self.normed_clss = []
 
         # Register hooks to the specified layers to capture attention outputs
         for idx in layer_indices:
@@ -70,11 +70,19 @@ class OpenCLIPWrapper(CopyAttrWrapper):
     def _aggregate_c_proj(self, module, input, output):
         self.tmp @= module.weight.T
     def _finalize_hook(self, module, input, output):
-        std = output[0, ...].std(dim=-1).detach()
-        self.tmp /= rearrange(std, 'b -> 1 b 1')
-        self.tmp *= self.visual.ln_post.weight
+        cls = output[:1, ...]
+        std = cls.std(dim=-1).detach()
+        self.tmp /= rearrange(std, '1 b -> 1 b 1')
+        self.tmp *= self.visual.ln_post.weight  # [len, batch, dim]
         self.tmp @= self.visual.proj
-        self.tmp = F.normalize(self.tmp, dim=-1)
+
+        cls_encoded = self.visual.ln_post(cls) @ self.visual.proj   # [len, batch, dim]
+        val = cls_encoded.norm(dim=-1, keepdim=True)    # [1, batch, 1]
+        self.tmp /= val
+
+        self.normed_clss.append(F.normalize(cls_encoded, dim=-1))
+        
+        # self.tmp = F.normalize(self.tmp, dim=-1)
         self.result.append(self.tmp)
 
     def dot_concept_vectors(self, concept_vectors: torch.Tensor):
@@ -83,8 +91,30 @@ class OpenCLIPWrapper(CopyAttrWrapper):
         Args:
             concept_vectors (torch.Tensor): [batch_size, dim]
         """
-        for res in self.result:
-            self.maps.append(torch.einsum('n b d, m d -> n b m', res, concept_vectors))
+        w = h = int(math.sqrt(self.result[0].shape[0]-1))  # Exclude CLS token
+        for i, res in enumerate(self.result):
+            prod = torch.einsum('n b d, m d -> n b m', res, concept_vectors)
+            weight = torch.einsum('n b d, m d -> n b m', self.normed_clss[i], concept_vectors)
+            # print(weight)
+            prod = prod * weight
+            map = rearrange(prod[1:,...], '(h w) b m -> h w b m', h=h, w=w)  # Exclude CLS token
+            self.maps.append(-map)
+
+    def aggregate_layerwise_maps(self):
+        """Aggregate the stored maps across all requested layers.
+        Returns:
+            torch.Tensor: Aggregated attention maps of shape [H, W, batch_size, num_concepts]
+        """
+        if not self.maps:
+            raise ValueError("No attention maps stored. Please run a forward pass and compute dot_concept_vectors first.")
+        maps = torch.stack(self.maps, dim=0)
+        maps = torch.clamp(maps - maps.mean(dim=(1, 2), keepdim=True), min=0.)
+        maps = torch.einsum('l h w b m ->  h w b m', maps)
+        maps = rearrange(maps, 'h w b m -> b m h w')
+        
+        maps = (maps - maps.min()) / (maps.max() - maps.min() + 1e-8)
+        maps = F.interpolate(maps, scale_factor=self.visual.patch_size[0], mode='bilinear')
+        return maps
 
     def _get_device_for_call(self, device: Optional[str] = None):
         # Try to get the device from the original model's parameters, otherwise use the passed device or cpu
@@ -111,24 +141,3 @@ class OpenCLIPWrapper(CopyAttrWrapper):
         # CopyAttrWrapper has no tensor buffers of its own, still call the parent class (it will move parameters registered to the wrapper)
         return super().to(*args, **kwargs)
     
-class ResidualAttentionBlockWrapper(ResAttnBlk):
-    """
-    A wrapper for open-clip's ResidualAttentionBlock to expose attention weights if needed.
-    """
-    def __init__(self, block: ResAttnBlk):
-        super().__init__(block)
-
-    def forward(
-            self,
-            q_x: torch.Tensor,
-            k_x: Optional[torch.Tensor] = None,
-            v_x: Optional[torch.Tensor] = None,
-            attn_mask: Optional[torch.Tensor] = None,
-    ):
-        k_x = self.ln_1_kv(k_x) if hasattr(self, "ln_1_kv") and k_x is not None else None
-        v_x = self.ln_1_kv(v_x) if hasattr(self, "ln_1_kv") and v_x is not None else None
-
-        qkv_x = self.ls_1(self.attention(q_x=self.ln_1(q_x), k_x=k_x, v_x=v_x, attn_mask=attn_mask))
-        x = q_x + qkv_x
-        x = x + self.ls_2(self.mlp(self.ln_2(x)))
-        return x

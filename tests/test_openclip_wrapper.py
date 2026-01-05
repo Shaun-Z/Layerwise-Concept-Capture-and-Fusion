@@ -1,13 +1,29 @@
 
 import pytest
-import open_clip
-from lccf.detect import detect_and_wrap
+
+import requests
+from PIL import Image
+
 import torch
+import open_clip
+
+from lccf.detect import detect_and_wrap
+
 
 @pytest.fixture
 def model():
     model, _, _ = open_clip.create_model_and_transforms('ViT-B-16', pretrained='laion2b_s34b_b88k')
+    model.eval()
     return model
+
+@pytest.fixture
+def preprocess():
+    _, _, preprocess = open_clip.create_model_and_transforms('ViT-B-16', pretrained='laion2b_s34b_b88k')
+    return preprocess
+
+@pytest.fixture
+def tokenizer():
+    return open_clip.get_tokenizer(model_name='ViT-B-16')
 
 def test_openclip_wrapper(model):
     wrapper = detect_and_wrap(model, prefer='openclip', layer_indices=[2, 5, 8])
@@ -47,9 +63,8 @@ def test_hooks(model, batch_size, layer_indices):
                                              "a photo of a person", "a photo of a computer", "a photo of a phone",
                                              "a photo of a cup"]),
                                 ])
-def test_concept_vectors(model, batch_size, layer_indices, prompts):
+def test_concept_vectors(model, tokenizer, batch_size, layer_indices, prompts):
     # Ensure that the wrapper works with the vision transformer architecture
-    tokenizer = open_clip.get_tokenizer(model_name='ViT-B-16')
     text = tokenizer(prompts)
     text_embeddings = model.encode_text(text, normalize=True)
     assert text_embeddings.shape == (len(prompts), 512)
@@ -60,6 +75,28 @@ def test_concept_vectors(model, batch_size, layer_indices, prompts):
     assert torch.stack(wrapper.result, dim=0).shape == (len(layer_indices), 197, batch_size, 512)
 
     wrapper.dot_concept_vectors(text_embeddings)
-    assert torch.stack(wrapper.maps, dim=0).shape == (len(layer_indices), 197, batch_size, len(prompts))
+    assert torch.stack(wrapper.maps, dim=0).shape == (len(layer_indices), 14, 14, batch_size, len(prompts))
 
-    
+
+@pytest.mark.parametrize("layer_indices, prompts", [
+                                ([0,11],["a photo of a cat",
+                                         "a photo of a remote controller"]),
+                                ])
+def test_single_image(model, preprocess, tokenizer, layer_indices, prompts):
+    text = tokenizer(prompts)
+    text_embeddings = model.encode_text(text, normalize=True)
+    assert text_embeddings.shape == (len(prompts), 512)
+
+    wrapper = detect_and_wrap(model, prefer='openclip', layer_indices=layer_indices)
+    device = wrapper._get_device_for_call()
+
+    url = "http://images.cocodataset.org/val2017/000000039769.jpg"
+    image = preprocess(Image.open(requests.get(url, stream=True).raw)).unsqueeze(0).to(device)
+    assert image.shape == (1, 3, 224, 224)
+
+    features = wrapper.encode_image(image)
+    assert torch.stack(wrapper.result, dim=0).shape == (len(layer_indices), 197, 1, 512)
+    wrapper.dot_concept_vectors(text_embeddings)
+    assert torch.stack(wrapper.maps, dim=0).shape == (len(layer_indices), 14, 14, 1, len(prompts))
+    maps = wrapper.aggregate_layerwise_maps()
+    assert maps.shape == (image.shape[0], len(prompts), 14, 14)
