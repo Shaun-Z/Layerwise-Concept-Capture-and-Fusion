@@ -49,9 +49,7 @@ def visualize(
     pil_imgs = [_to_pil(img, (H, W), mean=mean_std[0], std=mean_std[1]) for img in images]
     img_cvs = [cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR) for img in pil_imgs]
     heatmaps_np = (heatmaps.detach().cpu().numpy() * 255).astype("uint8")   # [N, num_concepts, H, W]
-    print(heatmaps_np.shape)
-    # heat_maps = [cv2.applyColorMap(hm, cv2.COLORMAP_JET) for hm in heatmaps_np]
-    # overlays = [(1 - alpha) * img_cv + alpha * hm for hm in heat_maps]
+    
     fig, axes = plt.subplots(num_images,
                              1 + heatmaps_np.shape[1],
                              figsize=(4 * (1 + num_concepts), 4),
