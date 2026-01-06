@@ -91,3 +91,6 @@ print(f"Aggregated maps shape: {maps_aggregated.shape}")
 # %%
 # Visualize aggregated maps
 visualize(image, maps_aggregated, text_prompts=concept_names, mean_std=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
+
+# %%
+wrapper.reset()  # Clear stored results and maps for next use

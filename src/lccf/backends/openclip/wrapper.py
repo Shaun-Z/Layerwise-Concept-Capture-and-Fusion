@@ -24,12 +24,8 @@ class OpenCLIPWrapper(CopyAttrWrapper):
     def __init__(self, model: Any, layer_indices: Optional[List[int]] = None, include_private: bool = False):
         # The copying behavior is done by the parent class CopyAttrWrapper (tiling the model's attributes)
         super().__init__(model, layer_indices=layer_indices, include_private=include_private)
-        self.tmp = None
-        # self.norm_mean = []
-        # self.norm_std = []
-        self.result = []
-        self.maps = []
-        self.normed_clss = []
+        
+        self.reset()
 
         # Register hooks to the specified layers to capture attention outputs
         for idx in layer_indices:
@@ -41,6 +37,12 @@ class OpenCLIPWrapper(CopyAttrWrapper):
             block.mlp.c_proj.register_forward_hook(self._aggregate_c_proj)  # (n, b, d)
             block.register_forward_hook(self._finalize_hook)    # (n, b, d)
 
+    def reset(self):
+        """Reset the stored results and maps."""
+        self.tmp = None
+        self.result = []
+        self.maps = []
+        self.normed_clss = []
 
     def _save_attn_output(self, module, input, output):
         self.tmp = output[0].detach()

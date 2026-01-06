@@ -33,10 +33,8 @@ class TimmWrapper(CopyAttrWrapper):
     def __init__(self, model: Any, layer_indices: Optional[List[int]] = None, include_private: bool = False):
         # The copying behavior is done by the parent class CopyAttrWrapper (tiling the model's attributes)
         super().__init__(model, layer_indices=layer_indices, include_private=include_private)
-        self.tmp = None
-        self.result = []
-        self.maps = []
-        self.normed_clss = []
+        
+        self.reset()
         
         # Store patch info for later use
         self._patch_size = model.patch_embed.proj.kernel_size[0]
@@ -57,6 +55,13 @@ class TimmWrapper(CopyAttrWrapper):
             block.mlp.fc2.register_forward_hook(self._aggregate_fc2)  # (b, n, d)
             # Final hook on block output
             block.register_forward_hook(self._finalize_hook)  # (b, n, d)
+
+    def reset(self):
+        """Reset the stored results and maps."""
+        self.tmp = None
+        self.result = []
+        self.maps = []
+        self.normed_clss = []
 
     def _save_attn_proj_output(self, module, input, output):
         # timm attention proj output: (B, N, D)

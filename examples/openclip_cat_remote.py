@@ -51,7 +51,7 @@ visualize_layerwise_maps(image, wrapper.maps, text_prompts=prompts, mean_std=(OP
 maps_aggregated = wrapper.aggregate_layerwise_maps()
 
 # %%
-maps_aggregated.ndim
+visualize(image, maps_aggregated, text_prompts=prompts, mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD))
 
 # %%
-visualize(image, maps_aggregated, text_prompts=prompts, mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD))
+wrapper.reset()  # Clear stored results and maps for next use
