@@ -31,13 +31,14 @@ def visualize(
     """
     Overlay heatmaps on the input image.
     Args:
-        images: PIL or normalized tensor [C,H,W] or [1,C,H,W]
+        images: PIL or normalized tensor [B,C,H,W]
         heatmaps: [N, H, W] or [1,N,H,W] tensor in [0,1]
         alpha: overlay strength
         text_prompts: optional titles per heatmap
         save_dir: optional directory to save pngs
         title: optional title for the original image
     """
+    assert images.ndim == 4  # [batch_size, channel, height, width]
     assert heatmaps.ndim == 4   # [batch_size, num_concepts, H, W]
     H, W = heatmaps.shape[-2:]
     num_images = heatmaps.shape[0]
@@ -47,7 +48,8 @@ def visualize(
         text_prompts = [str(i) for i in range(num_concepts)]
     pil_imgs = [_to_pil(img, (H, W), mean=mean_std[0], std=mean_std[1]) for img in images]
     img_cvs = [cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR) for img in pil_imgs]
-    heatmaps_np = (heatmaps.detach().cpu().numpy() * 255).astype("uint8")   # [N, num_concepts, 1, H, W]
+    heatmaps_np = (heatmaps.detach().cpu().numpy() * 255).astype("uint8")   # [N, num_concepts, H, W]
+    print(heatmaps_np.shape)
     # heat_maps = [cv2.applyColorMap(hm, cv2.COLORMAP_JET) for hm in heatmaps_np]
     # overlays = [(1 - alpha) * img_cv + alpha * hm for hm in heat_maps]
     fig, axes = plt.subplots(num_images,
