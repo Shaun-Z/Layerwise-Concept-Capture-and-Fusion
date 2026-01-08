@@ -66,3 +66,28 @@ class CopyAttrWrapper(nn.Module):
 
     def original_model(self):
         return object.__getattribute__(self, "_orig_model_ref")
+    
+    def _get_device_for_call(self, device: Optional[str] = None):
+        # Try to get the device from the original model's parameters, otherwise use the passed device or cpu
+        orig = self.original_model()
+        if device is not None:
+            return torch.device(device)
+        try:
+            # Find the device of the first parameter
+            for p in orig.parameters():
+                return p.device
+        except Exception:
+            pass
+        return torch.device("cpu")
+
+    def to(self, *args, **kwargs):
+        # Move the original model to the target device as well
+        orig = self.original_model()
+        try:
+            if hasattr(orig, "to"):
+                orig.to(*args, **kwargs)
+        except Exception:
+            # Ignore errors when moving the original model, but still try to call the parent class's to
+            pass
+        # CopyAttrWrapper has no tensor buffers of its own, still call the parent class (it will move parameters registered to the wrapper)
+        return super().to(*args, **kwargs)

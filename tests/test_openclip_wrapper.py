@@ -100,3 +100,52 @@ def test_single_image(model, preprocess, tokenizer, layer_indices, prompts):
     assert torch.stack(wrapper.maps, dim=0).shape == (len(layer_indices), 14, 14, 1, len(prompts))
     maps = wrapper.aggregate_layerwise_maps()
     assert maps.shape == (image.shape[0], len(prompts), 14, 14)
+
+@pytest.mark.parametrize("batch_size, layer_indices", [
+                                (10, [1, 3, 5]),
+                                (2, [0, 4, 7, 11]),
+                                (3, [])
+                                ])
+def test_grad_wrapper(model, batch_size, layer_indices):
+    # Test that we can extract features from a dummy input
+    dummy_input = torch.randn(batch_size, 3, 224, 224)
+    wrapper = detect_and_wrap(model, prefer='openclip', use_grad=True, layer_indices=layer_indices)
+    features = wrapper.encode_image(dummy_input)
+
+    if wrapper.attn_weights:
+        attn_weights = torch.stack(wrapper.attn_weights, dim=0)
+        assert attn_weights.shape == (len(layer_indices), batch_size, 197, 197)
+    if wrapper.block_outputs:
+        block_outputs = torch.stack(wrapper.block_outputs, dim=0)
+        assert block_outputs.shape == (len(layer_indices), 197, batch_size, 768)
+
+    assert wrapper.visual.output_dim == 512  # ViT-B-16 output dim
+    assert features.shape == (batch_size, 512)
+    assert wrapper._requested_hook_indices == layer_indices
+
+
+@pytest.mark.parametrize("batch_size, layer_indices, prompts", [
+                                (10, [0,11],["a photo of a cat", "a photo of a dog", "a photo of a bird",
+                                             "a photo of a car"]),
+                                ])
+def test_concept_vectors_grad_wrapper(model, tokenizer, batch_size, layer_indices, prompts):
+    # Ensure that the wrapper works with the vision transformer architecture
+    text = tokenizer(prompts)
+
+    text_embeddings = model.encode_text(text, normalize=True).detach()
+    assert text_embeddings.shape == (len(prompts), 512)
+
+    dummy_input = torch.randn(batch_size, 3, 224, 224)
+    wrapper = detect_and_wrap(model, prefer='openclip', use_grad=True, layer_indices=layer_indices)
+    features = wrapper.encode_image(dummy_input)
+    assert features.shape == (batch_size, 512)
+    attn_weights = torch.stack(wrapper.attn_weights, dim=0)
+    assert attn_weights.shape == (len(layer_indices), batch_size*wrapper.num_heads, 197, 197)
+    wrapper.dot_concept_vectors(text_embeddings)
+    grads = torch.stack(wrapper.grads, dim=0)
+    assert grads.shape == (len(layer_indices), len(prompts), batch_size, wrapper.num_heads, 197, 197)
+    maps = torch.stack(wrapper.maps, dim=0)
+    assert maps.shape == (len(layer_indices), 14, 14, batch_size, len(prompts))
+    exp_map = wrapper.aggregate_layerwise_maps()
+    assert exp_map.shape == (batch_size, len(prompts), 224, 224)
+    

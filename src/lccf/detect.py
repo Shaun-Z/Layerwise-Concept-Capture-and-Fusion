@@ -4,7 +4,7 @@ from torchvision.transforms import Compose, Resize, InterpolationMode, Normalize
 from .types import TimmViT, TorchViT, OpenCLIPViT
 from .wrap import CopyAttrWrapper
 # Import the specific backend wrapper (if it exists)
-from .backends.openclip.wrapper import OpenCLIPWrapper
+from .backends.openclip.wrapper import OpenCLIPWrapper, OpenCLIPGradWrapper
 # TODO: create timm and torchvision wrapper files similarly
 from .backends.timm.wrapper import TimmWrapper  # create file similarly
 from .backends.torchvision.wrapper import TorchvisionWrapper  # create file similarly
@@ -12,6 +12,7 @@ from .backends.torchvision.wrapper import TorchvisionWrapper  # create file simi
 def detect_and_wrap(model: Any,
                     layer_indices: Optional[List[int]] = None,
                     prefer: Optional[str] = None,
+                    use_grad: bool = False,
                     include_private: bool = False) -> CopyAttrWrapper:
     """
     Simply determines and returns a specific backend CopyAttrWrapper instance based on isinstance.
@@ -22,7 +23,10 @@ def detect_and_wrap(model: Any,
 
     # prefer preferred (override automatic judgment if needed)
     if prefer == "openclip" and isinstance(model.visual, OpenCLIPViT):
-        return OpenCLIPWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        if use_grad:
+            return OpenCLIPGradWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        else:
+            return OpenCLIPWrapper(model, layer_indices=layer_indices, include_private=include_private)
     if prefer == "timm" and isinstance(model, TimmViT):
         return TimmWrapper(model, layer_indices=layer_indices, include_private=include_private)
     if prefer == "torchvision" and isinstance(model, TorchViT):
