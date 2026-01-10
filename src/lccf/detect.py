@@ -12,7 +12,7 @@ from .backends.torchvision.wrapper import TorchvisionWrapper  # create file simi
 def detect_and_wrap(model: Any,
                     layer_indices: Optional[List[int]] = None,
                     prefer: Optional[str] = None,
-                    use_grad: bool = False,
+                    use_grad: bool = True,
                     include_private: bool = False) -> CopyAttrWrapper:
     """
     Simply determines and returns a specific backend CopyAttrWrapper instance based on isinstance.
