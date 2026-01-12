@@ -194,9 +194,10 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
             latent_feat = F.normalize(self.visual.ln_post(cls_feat) @ self.visual.proj, dim=-1) # (bsz, 512)
 
             sim_bm = torch.einsum('b d, m d ->b m', latent_feat, concept_vectors)  # (bsz, num_concepts)
-            sim_bm *= torch.abs(sim_bm.clone().detach()).pow(power)  # (bsz, num_concepts)
+            weight = torch.abs(sim_bm.clone().detach()).pow(power)
+            sim_bm *= weight  # (bsz, num_concepts)
             sim = sim_bm.sum(dim=0)  # (bsz, num_concepts) -> (num_concepts)
-            self.sim_bms.append(sim_bm)
+            self.sim_bms.append(weight)
             # Compute gradients of sim w.r.t. attn_weight
             eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
 
