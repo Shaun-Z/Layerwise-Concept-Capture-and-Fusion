@@ -5,7 +5,6 @@ import torch.nn.functional as F
 import math
 from einops import rearrange
 import types
-import concurrent.futures
 
 # CopyAttrWrapper is defined in lccf.wrap
 from ...wrap import CopyAttrWrapper
@@ -298,73 +297,58 @@ class ATimmWrapper(CopyAttrWrapper):
     """
     Asynchronous timm wrapper that computes gradients during the forward pass.
     
-    This version uses MANUAL gradient computation (not torch.autograd.grad) to enable
-    true async computation. Gradients are computed w.r.t. attention weights by manually
-    backpropagating through the network.
-    
     This version computes gradients during the forward pass by:
     1. Setting concept vectors before forward via set_concept_vectors()
-    2. Computing gradients w.r.t. attention weights as each block finishes (async capable)
-    3. Using ThreadPoolExecutor for true parallel computation
+    2. Computing gradients w.r.t. attention weights as each block finishes
+    3. Maps are ready immediately after forward_features() returns
     
-    The manual gradient approach:
-    - Stores V values during attention forward
-    - Computes d(loss)/d(attn_weights) = d(loss)/d(attn_output) @ V^T
-    - This can run in a separate thread since no autograd is involved
+    The key advantage is that maps are computed during forward pass,
+    avoiding the need for a separate backward pass. This uses the same
+    torch.autograd.grad() approach as TimmGradWrapper for exact consistency.
+    
+    Note: The gradient computation itself must be synchronous because PyTorch
+    autograd requires the same thread that created the computation graph.
     """
     def __init__(self, model: Any, layer_indices: Optional[List[int]] = None, include_private: bool = False,
                  power: int = 2, async_compute: bool = True):
-        # The copying behavior is done by the parent class CopyAttrWrapper (tiling the model's attributes)
+        # The copying behavior is done by the parent class CopyAttrWrapper
         super().__init__(model, layer_indices=layer_indices, include_private=include_private)
         
         # Store patch info for later use
         self._patch_size = model.patch_embed.proj.kernel_size[0]
         self._embed_dim = model.embed_dim
         self.num_heads = model.blocks[0].attn.num_heads
-        self.head_dim = model.blocks[0].attn.head_dim
         self.power = power
         self.async_compute = async_compute
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(layer_indices))) if async_compute and layer_indices else None
-        self._futures = []
         self._layer_indices = layer_indices
         
         self.reset()
         
-        # Register hooks to the specified layers to capture attention outputs
         for idx in layer_indices:
             block = self.blocks[idx]
-            
-            # Enable requires_grad for all parameters in the block (like GradWrapper)
             for name, param in block.named_parameters():
                 param.requires_grad = True
-            
-            # Override attention forward to store attention weights and V values
+            # Override attention forward to store attention weights
             block.attn.forward = types.MethodType(Attention_forward, block.attn)
             
-            # Register hooks
-            block.attn.register_forward_hook(self._save_attn_hook)  # Save attn_weights and V
-            block.register_forward_hook(self._finalize_and_compute_hook)  # Trigger gradient computation
+            block.attn.register_forward_hook(self._save_attn_hook)  # (B, N, D), (B*num_heads, N, N)
+            block.register_forward_hook(self._finalize_and_compute_hook)  # (B, N, D)
 
     def reset(self):
         """Reset the stored results and maps."""
         self._concept_vectors = None
         self._current_attn_weight = None
-        self._current_v_values = None
-        self._current_attn_module = None
         self.attn_weights = []
-        self.v_values = []
         self.block_outputs = []
         self.grads = []
         self.maps = []
         self.sim_bms = []
-        # Cancel any pending async computations
-        if hasattr(self, '_futures'):
-            for f in self._futures:
-                f.cancel()
-            self._futures = []
 
     def set_concept_vectors(self, concept_vectors: torch.Tensor, power: int = None):
         """Set concept vectors before forward pass.
+        
+        When concept vectors are set before forward, gradients and maps
+        are computed during the forward pass for each block.
         
         Args:
             concept_vectors (torch.Tensor): [num_concepts, dim] - normalized concept vectors
@@ -375,44 +359,39 @@ class ATimmWrapper(CopyAttrWrapper):
             self.power = power
 
     def _save_attn_hook(self, module, input, output):
-        """Save attention weights and V values from the attention module."""
+        """Save attention weights from the attention module."""
         # Retrieve attention weights stored by the modified forward
         # attn_weights: (B, num_heads, N, N) - stored in original shape
-        # DO NOT detach attn_weights - we need the gradient graph for torch.autograd.grad()
+        # DO NOT detach - we need the gradient graph for torch.autograd.grad()
         if hasattr(module, '_attn_weights'):
             self._current_attn_weight = module._attn_weights
             self.attn_weights.append(module._attn_weights)
-        if hasattr(module, '_v_values'):
-            self._current_v_values = module._v_values.detach()
-            self.v_values.append(module._v_values.detach())
-        self._current_attn_module = module
 
     def _finalize_and_compute_hook(self, module, input, output):
         """Finalize hook that computes gradient and map immediately after block forward.
         
-        Note: Gradient computation must be synchronous because torch.autograd.grad()
-        requires the same thread that created the computation graph.
+        If concept vectors were set via set_concept_vectors(), this hook
+        computes the gradient and map for this block immediately.
         """
         # Save block output (keep gradient connection for autograd)
         self.block_outputs.append(output)
         
-        # If concept vectors are set, compute gradient and map immediately (synchronously)
+        # If concept vectors are set, compute gradient and map immediately
         if self._concept_vectors is not None and self._current_attn_weight is not None:
-            # Compute using autograd (same as GradWrapper's dot_concept_vectors)
-            self._compute_gradient_and_map_autograd(output, self._current_attn_weight, self._concept_vectors)
+            self._compute_gradient_and_map(output, self._current_attn_weight, self._concept_vectors)
 
-    def _compute_gradient_and_map_autograd(self, block_output: torch.Tensor, attn_weight: torch.Tensor,
-                                            concept_vectors: torch.Tensor):
-        """Compute gradient and map for a single block using torch.autograd.grad().
+    def _compute_gradient_and_map(self, block_output: torch.Tensor, attn_weight: torch.Tensor,
+                                   concept_vectors: torch.Tensor):
+        """Compute gradient and map for a single block.
         
-        This uses the same approach as GradWrapper's dot_concept_vectors for exact consistency.
+        This uses the same approach as TimmGradWrapper's dot_concept_vectors.
         
         Args:
             block_output: Block output tensor (B, N, D)
             attn_weight: Attention weights (B, num_heads, N, N) with gradient graph
             concept_vectors: Concept vectors (num_concepts, D)
         """
-        w = h = int(math.sqrt(block_output.shape[1] - 1))  # Exclude CLS token, layout is (B, N, D)
+        w = h = int(math.sqrt(block_output.shape[1] - 1))  # Exclude CLS token
         
         # Zero gradients of the model
         self.zero_grad()
@@ -440,7 +419,6 @@ class ATimmWrapper(CopyAttrWrapper):
                                    create_graph=False,
                                    is_grads_batched=True)[0]  # (num_concepts, B, num_heads, N, N)
         grad = torch.clamp(grad, min=0.)
-        # grad is already in shape (num_concepts, B, num_heads, N, N)
         self.grads.append(grad)
         
         # Average over heads and query positions, exclude CLS token
@@ -452,31 +430,26 @@ class ATimmWrapper(CopyAttrWrapper):
         """Compute concept activation maps.
         
         If concept vectors were set before forward via set_concept_vectors(),
-        maps are already computed during forward pass.
+        maps are already computed and this method just returns.
         
         If concept vectors were NOT set before forward, this method computes
-        the maps using stored attention weights and block outputs with autograd.
+        the maps using stored attention weights and block outputs.
         
         Args:
             concept_vectors (torch.Tensor): [num_concepts, dim] - normalized concept vectors
             power (int): Power for similarity weighting. Default: 2
         """
-        # Wait for any async computations to complete
-        if self.async_compute and self._futures:
-            concurrent.futures.wait(self._futures)
-            self._futures = []
-        
         # If maps are already computed during forward, return
         if self.maps:
             return
         
-        # Otherwise, compute maps now using autograd (same as GradWrapper)
+        # Otherwise, compute maps now (same as GradWrapper)
         if not self.block_outputs or not self.attn_weights:
             raise ValueError("No block outputs or attention weights stored. Please run a forward pass first.")
         
         self.power = power
         for i, (block_output, attn_weight) in enumerate(zip(self.block_outputs, self.attn_weights)):
-            self._compute_gradient_and_map_autograd(block_output, attn_weight, concept_vectors)
+            self._compute_gradient_and_map(block_output, attn_weight, concept_vectors)
 
     def aggregate_layerwise_maps(self):
         """Aggregate the stored maps across all requested layers.
@@ -484,11 +457,6 @@ class ATimmWrapper(CopyAttrWrapper):
         Returns:
             torch.Tensor: Aggregated attention maps of shape [B, num_concepts, H, W]
         """
-        # Wait for any async computations to complete
-        if self.async_compute and self._futures:
-            concurrent.futures.wait(self._futures)
-            self._futures = []
-            
         if not self.maps:
             raise ValueError("No attention maps stored. Please run a forward pass and compute dot_concept_vectors first.")
         maps = torch.stack(self.maps, dim=0)
@@ -501,13 +469,3 @@ class ATimmWrapper(CopyAttrWrapper):
         maps = (maps - maps_min) / (maps_max - maps_min)
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
-
-    def close(self):
-        """Clean up resources, including the ThreadPoolExecutor."""
-        if hasattr(self, '_executor') and self._executor is not None:
-            self._executor.shutdown(wait=False)
-            self._executor = None
-
-    def __del__(self):
-        """Destructor to ensure cleanup."""
-        self.close()
