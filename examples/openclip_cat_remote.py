@@ -41,7 +41,7 @@ wrapper.dot_concept_vectors(text_embeddings)
 maps = torch.stack(wrapper.maps, dim=0)  # (num_layers, H, W, B, num_concepts)
 
 # %%
-visualize_layerwise_maps(image, wrapper.maps, text_prompts=prompts, mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD))
+visualize_layerwise_maps(image, wrapper.maps, sim_bms=wrapper.sim_bms, text_prompts=prompts, mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD))
 
 # %%
 maps_aggregated = wrapper.aggregate_layerwise_maps()

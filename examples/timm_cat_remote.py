@@ -81,7 +81,7 @@ print(f"Maps shape: {maps.shape}")
 
 # %%
 # Visualize layerwise maps
-visualize_layerwise_maps(image, wrapper.maps, text_prompts=concept_names, mean_std=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
+visualize_layerwise_maps(image, wrapper.maps, sim_bms=wrapper.sim_bms, text_prompts=concept_names, mean_std=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
 
 # %%
 # Aggregate maps across layers

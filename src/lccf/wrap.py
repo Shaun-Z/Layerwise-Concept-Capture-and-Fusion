@@ -37,6 +37,10 @@ class CopyAttrWrapper(nn.Module):
             except Exception:
                 continue
 
+        # Freeze parameters of the original model
+        for name, param in self.named_parameters():
+            param.requires_grad = False
+
         object.__setattr__(self, "_requested_hook_indices", list(layer_indices))
 
     def forward(self, *args, **kwargs):

@@ -202,6 +202,8 @@ class TorchvisionGradWrapper(CopyAttrWrapper):
         
         for idx in layer_indices:
             block = self.encoder.layers[idx]
+            for name, param in block.named_parameters():
+                param.requires_grad = True
             # Override self_attention forward to use custom MHA that returns attention weights
             block.self_attention.forward = types.MethodType(MultiheadAttention_forward_batch_first, block.self_attention)
             # Override block forward to capture attention weights
@@ -239,6 +241,7 @@ class TorchvisionGradWrapper(CopyAttrWrapper):
             # Compute similarity with concept vectors
             sim_bm = torch.einsum('b d, m d -> b m', latent_feat, concept_vectors)  # (B, num_concepts)
             sim_bm *= torch.abs(sim_bm.clone().detach()).pow(power)  # (B, num_concepts)
+            self.sim_bms.append(sim_bm)
             sim = sim_bm.sum(dim=0)  # (B, num_concepts) -> (num_concepts)
             
             # Compute gradients of sim w.r.t. attn_weight
@@ -283,26 +286,4 @@ class TorchvisionGradWrapper(CopyAttrWrapper):
         self.block_outputs = []
         self.grads = []
         self.maps = []
-
-    def _get_device_for_call(self, device: Optional[str] = None):
-        # Try to get the device from the original model's parameters, otherwise use the passed device or cpu
-        orig = self.original_model()
-        if device is not None:
-            return torch.device(device)
-        try:
-            # Find the device of the first parameter
-            for p in orig.parameters():
-                return p.device
-        except Exception:
-            pass
-        return torch.device("cpu")
-
-    def to(self, *args, **kwargs):
-        # Move the original model to the target device as well
-        orig = self.original_model()
-        try:
-            if hasattr(orig, "to"):
-                orig.to(*args, **kwargs)
-        except Exception:
-            pass
-        return super().to(*args, **kwargs)
+        self.sim_bms = []

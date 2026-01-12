@@ -99,6 +99,7 @@ def visualize_layerwise_maps(
         images: torch.Tensor,
         heatmaps: List[torch.Tensor],
         mean_std: tuple[tuple[float, float, float], tuple[float, float, float]],
+        sim_bms: Optional[List[torch.Tensor]] = None,
         alpha: float = 0.7,
         text_prompts: Optional[List[str]] = None,
         save_dir: Optional[Path] = None,
@@ -108,6 +109,8 @@ def visualize_layerwise_maps(
     Args:
         images: Normalized tensor [B,C,H,W]
         heatmaps: [H, W, B, M] * num_layers
+        sim_bms: Optional[List[torch.Tensor]] = None
+        mean_std: mean and std for denormalization
         alpha: overlay strength
         text_prompts: optional titles per heatmap
         save_dir: optional directory to save pngs
@@ -151,8 +154,7 @@ def visualize_layerwise_maps(
                 ov_rgb = cv2.cvtColor(overlay.astype("uint8"), cv2.COLOR_BGR2RGB)
                 axes[i*num_concepts + j, k + 1].imshow(ov_rgb)
                 axes[i*num_concepts + j, k + 1].axis("off")
-                axes[i*num_concepts + j, k + 1].set_title(f"Layer {k}")
-    plt.tight_layout()
+                axes[i*num_concepts + j, k + 1].set_title(f"Layer {k}\nsim {sim_bms[k][i,j]:.4f}" if sim_bms is not None else f"Layer {k}")
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
         out_path = save_dir / f"heatmap_{title}.png"

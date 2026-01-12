@@ -150,6 +150,8 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
         for idx in layer_indices:
             block = self.visual.transformer.resblocks[idx]
             assert hasattr(block, 'attention'), "The block does not have attention attribute."
+            for name, param in block.named_parameters():
+                param.requires_grad = True
             block.attention = types.MethodType(OpenCLIPGradWrapper.__attention_with_weights, block) # Override attention method: `need_weights=True`
             block.attn.forward = types.MethodType(MultiheadAttention_forward, block.attn)   # Override MHA forward method: save attn maps
 
@@ -194,6 +196,7 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
             sim_bm = torch.einsum('b d, m d ->b m', latent_feat, concept_vectors)  # (bsz, num_concepts)
             sim_bm *= torch.abs(sim_bm.clone().detach()).pow(power)  # (bsz, num_concepts)
             sim = sim_bm.sum(dim=0)  # (bsz, num_concepts) -> (num_concepts)
+            self.sim_bms.append(sim_bm)
             # Compute gradients of sim w.r.t. attn_weight
             eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
 
@@ -232,3 +235,4 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
         self.block_outputs = []
         self.grads = []
         self.maps = []
+        self.sim_bms = []
