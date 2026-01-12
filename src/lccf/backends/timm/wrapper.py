@@ -381,22 +381,13 @@ class ATimmWrapper(CopyAttrWrapper):
         self.block_outputs.append(output)
         
         # If concept vectors are set, compute gradient and map immediately
+        # Note: PyTorch autograd requires gradient computation on the same thread as forward pass,
+        # so we always compute synchronously here regardless of async_compute flag
         if self._concept_vectors is not None and self._current_attn_weight is not None:
             attn_weight = self._current_attn_weight
             block_output = output
-            
-            if self.async_compute and self._executor is not None:
-                # Submit async computation
-                future = self._executor.submit(
-                    self._compute_gradient_and_map, 
-                    block_output.detach().clone(), 
-                    attn_weight,  # Note: attn_weight needs gradient, can't detach
-                    self._concept_vectors.clone()
-                )
-                self._futures.append(future)
-            else:
-                # Compute synchronously
-                self._compute_gradient_and_map(block_output, attn_weight, self._concept_vectors)
+            # Compute synchronously (autograd doesn't work across threads)
+            self._compute_gradient_and_map(block_output, attn_weight, self._concept_vectors)
 
     def _compute_gradient_and_map(self, block_output: torch.Tensor, attn_weight: torch.Tensor, 
                                    concept_vectors: torch.Tensor):
