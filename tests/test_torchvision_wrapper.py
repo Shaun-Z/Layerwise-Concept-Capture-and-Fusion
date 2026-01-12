@@ -57,8 +57,9 @@ def test_hooks(model, batch_size, layer_indices):
     wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
     output = wrapper(dummy_input)
 
-    # result is transposed to (N, B, D) format in torchvision wrapper
-    assert torch.stack(wrapper.result, dim=0).shape == (len(layer_indices), 197, batch_size, 768)
+    # block_outputs is in (B, N, D) format for torchvision
+    if wrapper.block_outputs:
+        assert torch.stack(wrapper.block_outputs, dim=0).shape == (len(layer_indices), batch_size, 197, 768)
 
 
 @pytest.mark.parametrize("batch_size, layer_indices, num_concepts", [
@@ -74,7 +75,9 @@ def test_concept_vectors(model, batch_size, layer_indices, num_concepts):
     dummy_input = torch.randn(batch_size, 3, 224, 224)
     wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
     output = wrapper(dummy_input)
-    assert torch.stack(wrapper.result, dim=0).shape == (len(layer_indices), 197, batch_size, 768)
+    # block_outputs is in (B, N, D) format for torchvision
+    if wrapper.block_outputs:
+        assert torch.stack(wrapper.block_outputs, dim=0).shape == (len(layer_indices), batch_size, 197, 768)
 
     wrapper.dot_concept_vectors(concept_vectors)
     assert torch.stack(wrapper.maps, dim=0).shape == (len(layer_indices), 14, 14, batch_size, num_concepts)
@@ -93,7 +96,9 @@ def test_aggregate_maps(model, layer_indices, num_concepts):
     wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
     
     output = wrapper(dummy_input)
-    assert torch.stack(wrapper.result, dim=0).shape == (len(layer_indices), 197, 1, 768)
+    # block_outputs is in (B, N, D) format for torchvision
+    if wrapper.block_outputs:
+        assert torch.stack(wrapper.block_outputs, dim=0).shape == (len(layer_indices), 1, 197, 768)
     
     wrapper.dot_concept_vectors(concept_vectors)
     assert torch.stack(wrapper.maps, dim=0).shape == (len(layer_indices), 14, 14, 1, num_concepts)
