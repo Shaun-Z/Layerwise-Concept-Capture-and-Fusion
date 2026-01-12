@@ -26,7 +26,7 @@ def preprocess():
 
 
 def test_torchvision_wrapper(model):
-    wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=[2, 5, 8])
+    wrapper = detect_and_wrap(model, prefer='torchvision', async_compute=True, layer_indices=[2, 5, 8])
     device = wrapper._get_device_for_call()
     assert wrapper is not None
     assert isinstance(device, torch.device)
@@ -40,7 +40,7 @@ def test_torchvision_wrapper(model):
 def test_feature_extraction(model, batch_size, layer_indices):
     # Test that we can extract features from a dummy input
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='torchvision', async_compute=True, layer_indices=layer_indices)
     output = wrapper(dummy_input)
 
     assert wrapper.hidden_dim == 768  # ViT-B-16 hidden dim
@@ -54,7 +54,7 @@ def test_feature_extraction(model, batch_size, layer_indices):
 def test_hooks(model, batch_size, layer_indices):
     # Ensure that the wrapper works with the vision transformer architecture
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='torchvision', async_compute=True, layer_indices=layer_indices)
     output = wrapper(dummy_input)
 
     # block_outputs is in (B, N, D) format for torchvision
@@ -73,7 +73,7 @@ def test_concept_vectors(model, batch_size, layer_indices, num_concepts):
     concept_vectors = torch.nn.functional.normalize(concept_vectors, dim=-1)
 
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='torchvision', async_compute=True, layer_indices=layer_indices)
     output = wrapper(dummy_input)
     # block_outputs is in (B, N, D) format for torchvision
     if wrapper.block_outputs:
@@ -93,7 +93,7 @@ def test_aggregate_maps(model, layer_indices, num_concepts):
     concept_vectors = torch.nn.functional.normalize(concept_vectors, dim=-1)
     
     dummy_input = torch.randn(1, 3, 224, 224)
-    wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='torchvision', async_compute=True, layer_indices=layer_indices)
     
     output = wrapper(dummy_input)
     # block_outputs is in (B, N, D) format for torchvision
@@ -117,7 +117,7 @@ def test_aggregate_maps(model, layer_indices, num_concepts):
 def test_grad_wrapper(model, batch_size, layer_indices):
     # Test that we can extract features using the gradient wrapper
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=True, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='torchvision', async_compute=False, layer_indices=layer_indices)
     output = wrapper(dummy_input)
 
     if wrapper.attn_weights:
@@ -141,7 +141,7 @@ def test_concept_vectors_grad_wrapper(model, batch_size, layer_indices, num_conc
     concept_vectors = torch.nn.functional.normalize(concept_vectors, dim=-1).detach()
 
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=True, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='torchvision', async_compute=False, layer_indices=layer_indices)
     output = wrapper(dummy_input)
     assert output.shape == (batch_size, 1000)
     attn_weights = torch.stack(wrapper.attn_weights, dim=0)

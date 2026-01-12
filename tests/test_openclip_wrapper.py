@@ -52,7 +52,7 @@ def test_feature_extraction(model, batch_size, layer_indices):
 def test_hooks(model, batch_size, layer_indices):
     # Ensure that the wrapper works with the vision transformer architecture
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = detect_and_wrap(model, prefer='openclip', use_grad=False, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='openclip', async_compute=True, layer_indices=layer_indices)
     features = wrapper.encode_image(dummy_input)
 
     # block_outputs is in (N, B, D) format for OpenCLIP
@@ -72,7 +72,7 @@ def test_concept_vectors(model, tokenizer, batch_size, layer_indices, prompts):
     assert text_embeddings.shape == (len(prompts), 512)
 
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = detect_and_wrap(model, prefer='openclip', use_grad=False, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='openclip', async_compute=True, layer_indices=layer_indices)
     features = wrapper.encode_image(dummy_input)
     # block_outputs is in (N, B, D) format for OpenCLIP
     if wrapper.block_outputs:
@@ -91,7 +91,7 @@ def test_single_image(model, preprocess, tokenizer, layer_indices, prompts):
     text_embeddings = model.encode_text(text, normalize=True)
     assert text_embeddings.shape == (len(prompts), 512)
 
-    wrapper = detect_and_wrap(model, prefer='openclip', use_grad=False, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='openclip', async_compute=True, layer_indices=layer_indices)
     device = wrapper._get_device_for_call()
 
     url = "http://images.cocodataset.org/val2017/000000039769.jpg"
@@ -115,7 +115,7 @@ def test_single_image(model, preprocess, tokenizer, layer_indices, prompts):
 def test_grad_wrapper(model, batch_size, layer_indices):
     # Test that we can extract features from a dummy input
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = detect_and_wrap(model, prefer='openclip', use_grad=True, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='openclip', async_compute=False, layer_indices=layer_indices)
     features = wrapper.encode_image(dummy_input)
 
     if wrapper.attn_weights:
@@ -142,7 +142,7 @@ def test_concept_vectors_grad_wrapper(model, tokenizer, batch_size, layer_indice
     assert text_embeddings.shape == (len(prompts), 512)
 
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = detect_and_wrap(model, prefer='openclip', use_grad=True, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='openclip', async_compute=False, layer_indices=layer_indices)
     features = wrapper.encode_image(dummy_input)
     assert features.shape == (batch_size, 512)
     attn_weights = torch.stack(wrapper.attn_weights, dim=0)

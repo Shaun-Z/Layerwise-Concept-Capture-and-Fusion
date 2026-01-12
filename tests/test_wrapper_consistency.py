@@ -69,13 +69,13 @@ class TestTimmConsistency:
         model_grad.load_state_dict(state_dict)
         
         # Non-grad wrapper (now uses same approach as grad wrapper)
-        wrapper_no_grad = detect_and_wrap(model_no_grad, prefer='timm', use_grad=False, layer_indices=layer_indices)
+        wrapper_no_grad = detect_and_wrap(model_no_grad, prefer='timm', async_compute=True, layer_indices=layer_indices)
         _ = wrapper_no_grad.forward_features(dummy_input.clone())
         wrapper_no_grad.dot_concept_vectors(concept_vectors.clone())
         maps_no_grad = wrapper_no_grad.aggregate_layerwise_maps()
         
         # Grad wrapper (on separate model with same weights)
-        wrapper_grad = detect_and_wrap(model_grad, prefer='timm', use_grad=True, layer_indices=layer_indices)
+        wrapper_grad = detect_and_wrap(model_grad, prefer='timm', async_compute=False, layer_indices=layer_indices)
         _ = wrapper_grad.forward_features(dummy_input.clone())
         wrapper_grad.dot_concept_vectors(concept_vectors.clone())
         maps_grad = wrapper_grad.aggregate_layerwise_maps()
@@ -109,12 +109,12 @@ class TestTimmConsistency:
         model_grad.load_state_dict(state_dict)
         
         # Non-grad wrapper
-        wrapper_no_grad = detect_and_wrap(model_no_grad, prefer='timm', use_grad=False, layer_indices=layer_indices)
+        wrapper_no_grad = detect_and_wrap(model_no_grad, prefer='timm', async_compute=True, layer_indices=layer_indices)
         _ = wrapper_no_grad.forward_features(dummy_input.clone())
         wrapper_no_grad.dot_concept_vectors(concept_vectors.clone())
         
         # Grad wrapper
-        wrapper_grad = detect_and_wrap(model_grad, prefer='timm', use_grad=True, layer_indices=layer_indices)
+        wrapper_grad = detect_and_wrap(model_grad, prefer='timm', async_compute=False, layer_indices=layer_indices)
         _ = wrapper_grad.forward_features(dummy_input.clone())
         wrapper_grad.dot_concept_vectors(concept_vectors.clone())
         
@@ -146,7 +146,7 @@ class TestTimmConsistency:
         model2.load_state_dict(state_dict)
         
         # Method 1: Set concept vectors before forward (new feature)
-        wrapper1 = detect_and_wrap(model1, prefer='timm', use_grad=False, layer_indices=layer_indices)
+        wrapper1 = detect_and_wrap(model1, prefer='timm', async_compute=True, layer_indices=layer_indices)
         wrapper1.set_concept_vectors(concept_vectors.clone())
         _ = wrapper1.forward_features(dummy_input.clone())
         # Maps should already be computed during forward
@@ -154,7 +154,7 @@ class TestTimmConsistency:
         maps1 = wrapper1.aggregate_layerwise_maps()
         
         # Method 2: Traditional approach - call dot_concept_vectors after forward
-        wrapper2 = detect_and_wrap(model2, prefer='timm', use_grad=False, layer_indices=layer_indices)
+        wrapper2 = detect_and_wrap(model2, prefer='timm', async_compute=True, layer_indices=layer_indices)
         _ = wrapper2.forward_features(dummy_input.clone())
         wrapper2.dot_concept_vectors(concept_vectors.clone())
         maps2 = wrapper2.aggregate_layerwise_maps()
@@ -190,13 +190,13 @@ class TestTorchvisionConsistency:
         model_grad.load_state_dict(state_dict)
         
         # Non-grad wrapper
-        wrapper_no_grad = detect_and_wrap(model_no_grad, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+        wrapper_no_grad = detect_and_wrap(model_no_grad, prefer='torchvision', async_compute=True, layer_indices=layer_indices)
         _ = wrapper_no_grad(dummy_input.clone())
         wrapper_no_grad.dot_concept_vectors(concept_vectors.clone())
         maps_no_grad = wrapper_no_grad.aggregate_layerwise_maps()
         
         # Grad wrapper
-        wrapper_grad = detect_and_wrap(model_grad, prefer='torchvision', use_grad=True, layer_indices=layer_indices)
+        wrapper_grad = detect_and_wrap(model_grad, prefer='torchvision', async_compute=False, layer_indices=layer_indices)
         _ = wrapper_grad(dummy_input.clone())
         wrapper_grad.dot_concept_vectors(concept_vectors.clone())
         maps_grad = wrapper_grad.aggregate_layerwise_maps()
@@ -230,12 +230,12 @@ class TestTorchvisionConsistency:
         model_grad.load_state_dict(state_dict)
         
         # Non-grad wrapper
-        wrapper_no_grad = detect_and_wrap(model_no_grad, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+        wrapper_no_grad = detect_and_wrap(model_no_grad, prefer='torchvision', async_compute=True, layer_indices=layer_indices)
         _ = wrapper_no_grad(dummy_input.clone())
         wrapper_no_grad.dot_concept_vectors(concept_vectors.clone())
         
         # Grad wrapper
-        wrapper_grad = detect_and_wrap(model_grad, prefer='torchvision', use_grad=True, layer_indices=layer_indices)
+        wrapper_grad = detect_and_wrap(model_grad, prefer='torchvision', async_compute=False, layer_indices=layer_indices)
         _ = wrapper_grad(dummy_input.clone())
         wrapper_grad.dot_concept_vectors(concept_vectors.clone())
         
@@ -267,14 +267,14 @@ class TestTorchvisionConsistency:
         model2.load_state_dict(state_dict)
         
         # Method 1: Set concept vectors before forward
-        wrapper1 = detect_and_wrap(model1, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+        wrapper1 = detect_and_wrap(model1, prefer='torchvision', async_compute=True, layer_indices=layer_indices)
         wrapper1.set_concept_vectors(concept_vectors.clone())
         _ = wrapper1(dummy_input.clone())
         assert len(wrapper1.maps) == len(layer_indices), "Maps should be computed during forward"
         maps1 = wrapper1.aggregate_layerwise_maps()
         
         # Method 2: Traditional approach
-        wrapper2 = detect_and_wrap(model2, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+        wrapper2 = detect_and_wrap(model2, prefer='torchvision', async_compute=True, layer_indices=layer_indices)
         _ = wrapper2(dummy_input.clone())
         wrapper2.dot_concept_vectors(concept_vectors.clone())
         maps2 = wrapper2.aggregate_layerwise_maps()
