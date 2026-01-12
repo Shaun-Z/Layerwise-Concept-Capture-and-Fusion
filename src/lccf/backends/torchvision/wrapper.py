@@ -250,9 +250,19 @@ class TorchvisionWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min)
+        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
+
+    def close(self):
+        """Clean up resources, including the ThreadPoolExecutor."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=False)
+            self._executor = None
+
+    def __del__(self):
+        """Destructor to ensure cleanup."""
+        self.close()
 
     def _get_device_for_call(self, device: Optional[str] = None):
         # Try to get the device from the original model's parameters, otherwise use the passed device or cpu
@@ -379,7 +389,7 @@ class TorchvisionGradWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min)
+        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
 

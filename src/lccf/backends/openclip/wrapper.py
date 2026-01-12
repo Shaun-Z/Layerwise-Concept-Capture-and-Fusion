@@ -247,9 +247,19 @@ class OpenCLIPWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min)
+        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
         maps = F.interpolate(maps, scale_factor=self.visual.patch_size[0], mode='bilinear')
         return maps
+
+    def close(self):
+        """Clean up resources, including the ThreadPoolExecutor."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=False)
+            self._executor = None
+
+    def __del__(self):
+        """Destructor to ensure cleanup."""
+        self.close()
 
 class OpenCLIPGradWrapper(CopyAttrWrapper):
     """
@@ -347,7 +357,7 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min)
+        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
         maps = F.interpolate(maps, scale_factor=self.visual.patch_size[0], mode='bilinear')
         return maps
 

@@ -6,6 +6,7 @@ now use the same gradient-based approach as the GradWrappers and produce identic
 """
 
 import pytest
+import copy
 import torch
 import torch.nn.functional as F
 
@@ -15,18 +16,28 @@ from torchvision.models import vit_b_16
 from lccf.detect import detect_and_wrap
 
 
-@pytest.fixture
-def timm_model():
+def create_timm_model():
+    """Create a fresh timm model."""
     model = timm.create_model('vit_base_patch16_224', pretrained=False)
     model.eval()
     return model
 
 
-@pytest.fixture
-def torchvision_model():
+def create_torchvision_model():
+    """Create a fresh torchvision model."""
     model = vit_b_16(weights=None)
     model.eval()
     return model
+
+
+@pytest.fixture
+def timm_model():
+    return create_timm_model()
+
+
+@pytest.fixture
+def torchvision_model():
+    return create_torchvision_model()
 
 
 class TestTimmConsistency:
@@ -36,27 +47,35 @@ class TestTimmConsistency:
         (2, [0, 11], 3),
         (3, [5, 8, 11], 2),
     ])
-    def test_map_consistency(self, timm_model, batch_size, layer_indices, num_concepts):
-        """Test that both wrappers produce identical maps."""
+    def test_map_consistency(self, batch_size, layer_indices, num_concepts):
+        """Test that both wrappers produce identical maps when using the same model weights."""
         # Set random seed for reproducibility
         torch.manual_seed(42)
+        
+        # Create a base model and get its state dict
+        base_model = create_timm_model()
+        state_dict = base_model.state_dict()
         
         # Create input and concept vectors
         dummy_input = torch.randn(batch_size, 3, 224, 224)
         concept_vectors = torch.randn(num_concepts, 768)
         concept_vectors = F.normalize(concept_vectors, dim=-1).detach()
         
+        # Create two models with the SAME weights
+        model_no_grad = create_timm_model()
+        model_no_grad.load_state_dict(state_dict)
+        
+        model_grad = create_timm_model()
+        model_grad.load_state_dict(state_dict)
+        
         # Non-grad wrapper (now uses same approach as grad wrapper)
-        wrapper_no_grad = detect_and_wrap(timm_model, prefer='timm', use_grad=False, layer_indices=layer_indices)
+        wrapper_no_grad = detect_and_wrap(model_no_grad, prefer='timm', use_grad=False, layer_indices=layer_indices)
         _ = wrapper_no_grad.forward_features(dummy_input.clone())
         wrapper_no_grad.dot_concept_vectors(concept_vectors.clone())
         maps_no_grad = wrapper_no_grad.aggregate_layerwise_maps()
         
-        # Reset model for grad wrapper test
-        wrapper_no_grad.reset()
-        
-        # Grad wrapper
-        wrapper_grad = detect_and_wrap(timm_model, prefer='timm', use_grad=True, layer_indices=layer_indices)
+        # Grad wrapper (on separate model with same weights)
+        wrapper_grad = detect_and_wrap(model_grad, prefer='timm', use_grad=True, layer_indices=layer_indices)
         _ = wrapper_grad.forward_features(dummy_input.clone())
         wrapper_grad.dot_concept_vectors(concept_vectors.clone())
         maps_grad = wrapper_grad.aggregate_layerwise_maps()
@@ -71,7 +90,7 @@ class TestTimmConsistency:
     @pytest.mark.parametrize("batch_size, layer_indices, num_concepts", [
         (2, [0, 11], 3),
     ])
-    def test_grad_shape_consistency(self, timm_model, batch_size, layer_indices, num_concepts):
+    def test_grad_shape_consistency(self, batch_size, layer_indices, num_concepts):
         """Test that gradient shapes match between wrappers."""
         torch.manual_seed(42)
         
@@ -79,13 +98,23 @@ class TestTimmConsistency:
         concept_vectors = torch.randn(num_concepts, 768)
         concept_vectors = F.normalize(concept_vectors, dim=-1).detach()
         
+        # Create base model and get state dict
+        base_model = create_timm_model()
+        state_dict = base_model.state_dict()
+        
+        # Create fresh models with same weights
+        model_no_grad = create_timm_model()
+        model_no_grad.load_state_dict(state_dict)
+        model_grad = create_timm_model()
+        model_grad.load_state_dict(state_dict)
+        
         # Non-grad wrapper
-        wrapper_no_grad = detect_and_wrap(timm_model, prefer='timm', use_grad=False, layer_indices=layer_indices)
+        wrapper_no_grad = detect_and_wrap(model_no_grad, prefer='timm', use_grad=False, layer_indices=layer_indices)
         _ = wrapper_no_grad.forward_features(dummy_input.clone())
         wrapper_no_grad.dot_concept_vectors(concept_vectors.clone())
         
         # Grad wrapper
-        wrapper_grad = detect_and_wrap(timm_model, prefer='timm', use_grad=True, layer_indices=layer_indices)
+        wrapper_grad = detect_and_wrap(model_grad, prefer='timm', use_grad=True, layer_indices=layer_indices)
         _ = wrapper_grad.forward_features(dummy_input.clone())
         wrapper_grad.dot_concept_vectors(concept_vectors.clone())
         
@@ -106,18 +135,26 @@ class TestTimmConsistency:
         concept_vectors = torch.randn(num_concepts, 768)
         concept_vectors = F.normalize(concept_vectors, dim=-1).detach()
         
+        # Create base model and get state dict
+        base_model = create_timm_model()
+        state_dict = base_model.state_dict()
+        
+        # Create fresh models with same weights
+        model1 = create_timm_model()
+        model1.load_state_dict(state_dict)
+        model2 = create_timm_model()
+        model2.load_state_dict(state_dict)
+        
         # Method 1: Set concept vectors before forward (new feature)
-        wrapper1 = detect_and_wrap(timm_model, prefer='timm', use_grad=False, layer_indices=layer_indices)
+        wrapper1 = detect_and_wrap(model1, prefer='timm', use_grad=False, layer_indices=layer_indices)
         wrapper1.set_concept_vectors(concept_vectors.clone())
         _ = wrapper1.forward_features(dummy_input.clone())
         # Maps should already be computed during forward
         assert len(wrapper1.maps) == len(layer_indices), "Maps should be computed during forward"
         maps1 = wrapper1.aggregate_layerwise_maps()
         
-        wrapper1.reset()
-        
         # Method 2: Traditional approach - call dot_concept_vectors after forward
-        wrapper2 = detect_and_wrap(timm_model, prefer='timm', use_grad=False, layer_indices=layer_indices)
+        wrapper2 = detect_and_wrap(model2, prefer='timm', use_grad=False, layer_indices=layer_indices)
         _ = wrapper2.forward_features(dummy_input.clone())
         wrapper2.dot_concept_vectors(concept_vectors.clone())
         maps2 = wrapper2.aggregate_layerwise_maps()
@@ -134,24 +171,32 @@ class TestTorchvisionConsistency:
         (2, [0, 11], 3),
         (3, [5, 8, 11], 2),
     ])
-    def test_map_consistency(self, torchvision_model, batch_size, layer_indices, num_concepts):
-        """Test that both wrappers produce identical maps."""
+    def test_map_consistency(self, batch_size, layer_indices, num_concepts):
+        """Test that both wrappers produce identical maps when using the same model weights."""
         torch.manual_seed(42)
+        
+        # Create base model and get state dict
+        base_model = create_torchvision_model()
+        state_dict = base_model.state_dict()
         
         dummy_input = torch.randn(batch_size, 3, 224, 224)
         concept_vectors = torch.randn(num_concepts, 768)
         concept_vectors = F.normalize(concept_vectors, dim=-1).detach()
         
+        # Create fresh models with same weights
+        model_no_grad = create_torchvision_model()
+        model_no_grad.load_state_dict(state_dict)
+        model_grad = create_torchvision_model()
+        model_grad.load_state_dict(state_dict)
+        
         # Non-grad wrapper
-        wrapper_no_grad = detect_and_wrap(torchvision_model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+        wrapper_no_grad = detect_and_wrap(model_no_grad, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
         _ = wrapper_no_grad(dummy_input.clone())
         wrapper_no_grad.dot_concept_vectors(concept_vectors.clone())
         maps_no_grad = wrapper_no_grad.aggregate_layerwise_maps()
         
-        wrapper_no_grad.reset()
-        
         # Grad wrapper
-        wrapper_grad = detect_and_wrap(torchvision_model, prefer='torchvision', use_grad=True, layer_indices=layer_indices)
+        wrapper_grad = detect_and_wrap(model_grad, prefer='torchvision', use_grad=True, layer_indices=layer_indices)
         _ = wrapper_grad(dummy_input.clone())
         wrapper_grad.dot_concept_vectors(concept_vectors.clone())
         maps_grad = wrapper_grad.aggregate_layerwise_maps()
@@ -166,7 +211,7 @@ class TestTorchvisionConsistency:
     @pytest.mark.parametrize("batch_size, layer_indices, num_concepts", [
         (2, [0, 11], 3),
     ])
-    def test_grad_shape_consistency(self, torchvision_model, batch_size, layer_indices, num_concepts):
+    def test_grad_shape_consistency(self, batch_size, layer_indices, num_concepts):
         """Test that gradient shapes match between wrappers."""
         torch.manual_seed(42)
         
@@ -174,13 +219,23 @@ class TestTorchvisionConsistency:
         concept_vectors = torch.randn(num_concepts, 768)
         concept_vectors = F.normalize(concept_vectors, dim=-1).detach()
         
+        # Create base model and get state dict
+        base_model = create_torchvision_model()
+        state_dict = base_model.state_dict()
+        
+        # Create fresh models with same weights
+        model_no_grad = create_torchvision_model()
+        model_no_grad.load_state_dict(state_dict)
+        model_grad = create_torchvision_model()
+        model_grad.load_state_dict(state_dict)
+        
         # Non-grad wrapper
-        wrapper_no_grad = detect_and_wrap(torchvision_model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+        wrapper_no_grad = detect_and_wrap(model_no_grad, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
         _ = wrapper_no_grad(dummy_input.clone())
         wrapper_no_grad.dot_concept_vectors(concept_vectors.clone())
         
         # Grad wrapper
-        wrapper_grad = detect_and_wrap(torchvision_model, prefer='torchvision', use_grad=True, layer_indices=layer_indices)
+        wrapper_grad = detect_and_wrap(model_grad, prefer='torchvision', use_grad=True, layer_indices=layer_indices)
         _ = wrapper_grad(dummy_input.clone())
         wrapper_grad.dot_concept_vectors(concept_vectors.clone())
         
@@ -201,17 +256,25 @@ class TestTorchvisionConsistency:
         concept_vectors = torch.randn(num_concepts, 768)
         concept_vectors = F.normalize(concept_vectors, dim=-1).detach()
         
+        # Create base model and get state dict
+        base_model = create_torchvision_model()
+        state_dict = base_model.state_dict()
+        
+        # Create fresh models with same weights
+        model1 = create_torchvision_model()
+        model1.load_state_dict(state_dict)
+        model2 = create_torchvision_model()
+        model2.load_state_dict(state_dict)
+        
         # Method 1: Set concept vectors before forward
-        wrapper1 = detect_and_wrap(torchvision_model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+        wrapper1 = detect_and_wrap(model1, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
         wrapper1.set_concept_vectors(concept_vectors.clone())
         _ = wrapper1(dummy_input.clone())
         assert len(wrapper1.maps) == len(layer_indices), "Maps should be computed during forward"
         maps1 = wrapper1.aggregate_layerwise_maps()
         
-        wrapper1.reset()
-        
         # Method 2: Traditional approach
-        wrapper2 = detect_and_wrap(torchvision_model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+        wrapper2 = detect_and_wrap(model2, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
         _ = wrapper2(dummy_input.clone())
         wrapper2.dot_concept_vectors(concept_vectors.clone())
         maps2 = wrapper2.aggregate_layerwise_maps()
