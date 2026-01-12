@@ -5,9 +5,8 @@ from .types import TimmViT, TorchViT, OpenCLIPViT
 from .wrap import CopyAttrWrapper
 # Import the specific backend wrapper (if it exists)
 from .backends.openclip.wrapper import OpenCLIPWrapper, OpenCLIPGradWrapper
-# TODO: create timm and torchvision wrapper files similarly
-from .backends.timm.wrapper import TimmWrapper  # create file similarly
-from .backends.torchvision.wrapper import TorchvisionWrapper  # create file similarly
+from .backends.timm.wrapper import TimmWrapper, TimmGradWrapper
+from .backends.torchvision.wrapper import TorchvisionWrapper, TorchvisionGradWrapper
 
 def detect_and_wrap(model: Any,
                     layer_indices: Optional[List[int]] = None,
@@ -17,6 +16,7 @@ def detect_and_wrap(model: Any,
     """
     Simply determines and returns a specific backend CopyAttrWrapper instance based on isinstance.
     prefer: optional, string: 'openclip'|'timm'|'torchvision' to force branching (if matched)
+    use_grad: if True, use gradient-based wrapper (GradWrapper), otherwise use the standard wrapper
     """
     if model is None:
         raise ValueError("model cannot be None")
@@ -28,17 +28,32 @@ def detect_and_wrap(model: Any,
         else:
             return OpenCLIPWrapper(model, layer_indices=layer_indices, include_private=include_private)
     if prefer == "timm" and isinstance(model, TimmViT):
-        return TimmWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        if use_grad:
+            return TimmGradWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        else:
+            return TimmWrapper(model, layer_indices=layer_indices, include_private=include_private)
     if prefer == "torchvision" and isinstance(model, TorchViT):
-        return TorchvisionWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        if use_grad:
+            return TorchvisionGradWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        else:
+            return TorchvisionWrapper(model, layer_indices=layer_indices, include_private=include_private)
 
     # Default type-based judgment (order can be adjusted)
     if isinstance(model.visual, OpenCLIPViT):
-        return OpenCLIPWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        if use_grad:
+            return OpenCLIPGradWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        else:
+            return OpenCLIPWrapper(model, layer_indices=layer_indices, include_private=include_private)
     if isinstance(model, TimmViT):
-        return TimmWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        if use_grad:
+            return TimmGradWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        else:
+            return TimmWrapper(model, layer_indices=layer_indices, include_private=include_private)
     if isinstance(model, TorchViT):
-        return TorchvisionWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        if use_grad:
+            return TorchvisionGradWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        else:
+            return TorchvisionWrapper(model, layer_indices=layer_indices, include_private=include_private)
 
     # fallback: Raise error
     raise TypeError("Unable to detect the backend type of the model, or the backend is not supported. Please ensure the model is an open_clip, timm, or torchvision ViT model, or use the prefer parameter to force specify the backend.")
