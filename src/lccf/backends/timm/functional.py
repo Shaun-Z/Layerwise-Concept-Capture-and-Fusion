@@ -48,6 +48,10 @@ def Attention_forward(
     # Store attention weights on the module for later retrieval
     # Store in original shape (B, num_heads, N, N) to maintain gradient connection
     self._attn_weights = attn_weights
+    # Store V values for manual gradient computation (detached since we compute manually)
+    self._v_values = v.detach()  # (B, num_heads, N, head_dim)
+    # Store attention output before projection for gradient computation
+    self._attn_output = (attn_weights @ v).detach()  # (B, num_heads, N, head_dim)
     
     attn = self.attn_drop(attn_weights)
     x = attn @ v  # (B, num_heads, N, head_dim)
