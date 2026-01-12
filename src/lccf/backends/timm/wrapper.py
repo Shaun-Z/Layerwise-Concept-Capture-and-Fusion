@@ -221,11 +221,12 @@ class TimmGradWrapper(CopyAttrWrapper):
         # Block output: (B, N, D)
         self.block_outputs.append(output)
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor):
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 2):
         """Compute gradient-based concept activation maps.
         
         Args:
             concept_vectors (torch.Tensor): [num_concepts, dim] - normalized concept vectors
+            power (int): Power for similarity scaling. Default: 2
         """
         w = h = int(math.sqrt(self.block_outputs[0].shape[1] - 1))  # Exclude CLS token, layout is (B, N, D)
         for i, (block_output, attn_weight) in enumerate(zip(self.block_outputs, self.attn_weights)):
@@ -240,7 +241,9 @@ class TimmGradWrapper(CopyAttrWrapper):
             latent_feat = F.normalize(self.norm(cls_feat), dim=-1)  # (B, D)
             
             # Compute similarity with concept vectors
-            sim = torch.einsum('b d, m d -> b m', latent_feat, concept_vectors).sum(dim=0)  # (num_concepts,)
+            sim_bm = torch.einsum('b d, m d -> b m', latent_feat, concept_vectors)  # (B, num_concepts)
+            sim_bm *= torch.abs(sim_bm.clone().detach()).pow(power)  # (B, num_concepts)
+            sim = sim_bm.sum(dim=0)  # (B, num_concepts) -> (num_concepts)
             
             # Compute gradients of sim w.r.t. attn_weight
             # attn_weight shape: (B, num_heads, N, N)
@@ -274,7 +277,7 @@ class TimmGradWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
+        maps = (maps - maps_min) / (maps_max - maps_min)
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
 
