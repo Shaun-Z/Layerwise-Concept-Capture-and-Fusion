@@ -52,7 +52,9 @@ def Attention_forward(
     attn = self.attn_drop(attn_weights)
     x = attn @ v  # (B, num_heads, N, head_dim)
     
-    x = x.transpose(1, 2).reshape(B, N, self.attn_dim)
+    # Compute attn_dim for compatibility with older timm versions
+    attn_dim = getattr(self, 'attn_dim', self.num_heads * self.head_dim)
+    x = x.transpose(1, 2).reshape(B, N, attn_dim)
     x = self.norm(x)
     x = self.proj(x)
     x = self.proj_drop(x)
