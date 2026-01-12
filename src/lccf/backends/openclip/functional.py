@@ -393,6 +393,12 @@ def __multi_head_attention_forward(
             attn_output_weights = dropout(attn_output_weights, p=dropout_p)
 
         attn_output = torch.bmm(attn_output_weights, v)
+        
+        # Store V values for manual gradient computation (detached)
+        # v shape: (bsz*num_heads, src_len, head_dim)
+        # Store as module attribute for later retrieval
+        # Note: We store in a way that can be accessed by hooks
+        __openclip_v_values = v.detach()
 
         attn_output = (
             attn_output.transpose(0, 1).contiguous().view(tgt_len * bsz, embed_dim)
@@ -409,7 +415,7 @@ def __multi_head_attention_forward(
             # squeeze the output if input was unbatched
             attn_output = attn_output.squeeze(1)
             # attn_output_weights = attn_output_weights.squeeze(0)
-        return attn_output, attn_output_weights
+        return attn_output, attn_output_weights, __openclip_v_values
     else:
         # attn_mask can be either (L,S) or (N*num_heads, L, S)
         # if attn_mask's shape is (1, L, S) we need to unsqueeze to (1, 1, L, S)
@@ -493,7 +499,7 @@ Shape:
       L is the target sequence length, S is the source sequence length.
     """
     if not self._qkv_same_embed_dim:
-        attn_output, attn_output_weights = __multi_head_attention_forward(
+        attn_output, attn_output_weights, v_values = __multi_head_attention_forward(
             query,
             key,
             value,
@@ -519,7 +525,7 @@ Shape:
             is_causal=is_causal,
         )
     else:
-        attn_output, attn_output_weights = __multi_head_attention_forward(
+        attn_output, attn_output_weights, v_values = __multi_head_attention_forward(
             query,
             key,
             value,
@@ -540,6 +546,6 @@ Shape:
             average_attn_weights=average_attn_weights,
             is_causal=is_causal,
         )
-    # Hook for attention maps
-    # self.attention_maps = _attn_maps
+    # Store V values on the module for manual gradient computation
+    self._v_values = v_values
     return attn_output, attn_output_weights

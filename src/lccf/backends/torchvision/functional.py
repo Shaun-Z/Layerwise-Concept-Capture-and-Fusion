@@ -91,6 +91,10 @@ def MultiheadAttention_forward_batch_first(
     
     attn_output_weights = softmax(attn_output_weights, dim=-1)
     
+    # Store V values for manual gradient computation (detached)
+    # v shape: (bsz*num_heads, src_len, head_dim)
+    __torchvision_v_values = v.detach()
+    
     dropout_p = self.dropout if self.training else 0.0
     if dropout_p > 0.0:
         attn_dropped = dropout(attn_output_weights, p=dropout_p)
@@ -106,6 +110,9 @@ def MultiheadAttention_forward_batch_first(
     # Transpose back to batch_first format
     if self.batch_first:
         attn_output = attn_output.transpose(0, 1)
+    
+    # Store V values on the module for manual gradient computation
+    self._v_values = __torchvision_v_values
     
     return attn_output, attn_output_weights
 
