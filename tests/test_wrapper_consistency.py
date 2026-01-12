@@ -149,9 +149,10 @@ class TestTimmConsistency:
         wrapper1 = detect_and_wrap(model1, prefer='timm', async_compute=True, layer_indices=layer_indices)
         wrapper1.set_concept_vectors(concept_vectors.clone())
         _ = wrapper1.forward_features(dummy_input.clone())
-        # Maps should already be computed during forward
-        assert len(wrapper1.maps) == len(layer_indices), "Maps should be computed during forward"
+        # Maps are computed asynchronously during forward; aggregate_layerwise_maps waits for completion
         maps1 = wrapper1.aggregate_layerwise_maps()
+        # After aggregate, maps should be populated
+        assert len(wrapper1.maps) == len(layer_indices), "Maps should be computed after aggregate"
         
         # Method 2: Traditional approach - call dot_concept_vectors after forward
         wrapper2 = detect_and_wrap(model2, prefer='timm', async_compute=True, layer_indices=layer_indices)
@@ -270,8 +271,10 @@ class TestTorchvisionConsistency:
         wrapper1 = detect_and_wrap(model1, prefer='torchvision', async_compute=True, layer_indices=layer_indices)
         wrapper1.set_concept_vectors(concept_vectors.clone())
         _ = wrapper1(dummy_input.clone())
-        assert len(wrapper1.maps) == len(layer_indices), "Maps should be computed during forward"
+        # Maps are computed asynchronously during forward; aggregate_layerwise_maps waits for completion
         maps1 = wrapper1.aggregate_layerwise_maps()
+        # After aggregate, maps should be populated
+        assert len(wrapper1.maps) == len(layer_indices), "Maps should be computed after aggregate"
         
         # Method 2: Traditional approach
         wrapper2 = detect_and_wrap(model2, prefer='torchvision', async_compute=True, layer_indices=layer_indices)
