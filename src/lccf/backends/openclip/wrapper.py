@@ -179,7 +179,7 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
     def _save_block_hook(self, module, input, output):
         self.block_outputs.append(output)
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor):
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 2):
         """_summary_
             Call this function before foward.
         Args:
@@ -191,7 +191,9 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
             cls_feat = block_output[1, ...]    # (batch_size, 768)
             latent_feat = F.normalize(self.visual.ln_post(cls_feat) @ self.visual.proj, dim=-1) # (bsz, 512)
 
-            sim = torch.einsum('b d, m d ->b m', latent_feat, concept_vectors).sum(dim=0)  # (bsz, num_concepts) -> (num_concepts)
+            sim_bm = torch.einsum('b d, m d ->b m', latent_feat, concept_vectors)  # (bsz, num_concepts)
+            sim_bm *= torch.abs(sim_bm.clone().detach()).pow(power)  # (bsz, num_concepts)
+            sim = sim_bm.sum(dim=0)  # (bsz, num_concepts) -> (num_concepts)
             # Compute gradients of sim w.r.t. attn_weight
             eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
 
@@ -220,7 +222,7 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
+        maps = (maps - maps_min) / (maps_max - maps_min)
         maps = F.interpolate(maps, scale_factor=self.visual.patch_size[0], mode='bilinear')
         return maps
 

@@ -10,6 +10,21 @@ import matplotlib.pyplot as plt
 
 from einops import rearrange
 
+def minmax_norm(x: torch.Tensor, dim: Optional[int] = None, eps: float = 1e-8) -> torch.Tensor:
+    """Min-max normalize a tensor along a specified dimension.
+    
+    Args:
+        x (torch.Tensor): Input tensor to normalize.
+        dim (int, optional): Dimension along which to compute min and max. Defaults to None.
+        eps (float, optional): Small value to avoid division by zero. Defaults to 1e-8.
+
+    Returns:
+        torch.Tensor: Min-max normalized tensor.
+    """
+    xmin = torch.amin(x, dim=dim, keepdim=True)
+    xmax = torch.amax(x, dim=dim, keepdim=True)
+    return (x - xmin) / (xmax - xmin + eps)
+
 def _to_pil(image: torch.Tensor | Image.Image, target_wh: tuple[int, int], mean: tuple[float, float, float], std: tuple[float, float, float]) -> Image.Image:
     if isinstance(image, Image.Image):
         return image.resize(target_wh)
@@ -112,7 +127,7 @@ def visualize_layerwise_maps(
     num_concepts = heatmaps.shape[2]
     num_layers = heatmaps.shape[0]
 
-    heatmaps = (heatmaps - heatmaps.min()) / (heatmaps.max() - heatmaps.min() + 1e-8)
+    heatmaps = (heatmaps - heatmaps.min()) / (heatmaps.max() - heatmaps.min())
     heatmaps_np = (heatmaps.detach().cpu().numpy() * 255).astype("uint8")  
 
     fig, axes = plt.subplots(
