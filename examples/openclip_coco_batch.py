@@ -57,7 +57,7 @@ attn_weights = torch.stack(wrapper.attn_weights, dim=0)
 print(f"Attention weights shape: {attn_weights.shape}")
 
 # %%
-wrapper.dot_concept_vectors(text_embeddings, power=0)
+wrapper.dot_concept_vectors(text_embeddings)
 
 # %%
 maps = torch.stack(wrapper.maps, dim=0)

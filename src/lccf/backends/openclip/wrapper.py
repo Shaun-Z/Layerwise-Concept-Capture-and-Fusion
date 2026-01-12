@@ -207,7 +207,7 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
                                        create_graph=False,
                                        is_grads_batched=True)[0]  # (num_concepts, bsz*num_heads, n, n)
             if weighted_attn:
-                grad = torch.einsum('m b h i j, b h j k -> m b h i k', grad, attn_weight.transpose(-2, -1))  # Matrix multiplication: grad @ attn_weight^T
+                grad = torch.einsum('m X i j, X j k -> m X i k', grad, attn_weight.transpose(-2, -1))  # Matrix multiplication: grad @ attn_weight^T
             grad = torch.clamp(grad, min=0.)
             grad = rearrange(grad, 'm (b h) n1 n2 ->m b h n1 n2', h=self.num_heads)  # (num_concepts, bsz, num_heads, n, n)
             self.grads.append(grad)
