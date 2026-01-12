@@ -233,8 +233,7 @@ class TimmGradWrapper(CopyAttrWrapper):
         w = h = int(math.sqrt(self.block_outputs[0].shape[1] - 1))  # Exclude CLS token, layout is (B, N, D)
         for i, (block_output, attn_weight) in enumerate(zip(self.block_outputs, self.attn_weights)):
             # Zero gradients of the model
-            orig = self.original_model()
-            orig.zero_grad()
+            self.zero_grad()
             
             # block_output: (B, N, D)
             cls_feat = block_output[:, 0, ...]  # (B, D) - CLS token
