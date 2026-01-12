@@ -223,7 +223,7 @@ class TimmGradWrapper(CopyAttrWrapper):
         # Block output: (B, N, D)
         self.block_outputs.append(output)
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 2):
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 1, weighted_attn: bool = False):
         """Compute gradient-based concept activation maps.
         
         Args:
@@ -257,6 +257,8 @@ class TimmGradWrapper(CopyAttrWrapper):
                                        retain_graph=True,
                                        create_graph=False,
                                        is_grads_batched=True)[0]  # (num_concepts, B, num_heads, N, N)
+            if weighted_attn:
+                grad = torch.einsum('m b h i j, b h j k -> m b h i k', grad, attn_weight.transpose(-2, -1))  # Matrix multiplication: grad @ attn_weight^T
             grad = torch.clamp(grad, min=0.)
             # grad is already in shape (num_concepts, B, num_heads, N, N)
             self.grads.append(grad)

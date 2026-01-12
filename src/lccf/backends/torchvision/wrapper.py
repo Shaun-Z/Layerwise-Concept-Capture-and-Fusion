@@ -219,7 +219,7 @@ class TorchvisionGradWrapper(CopyAttrWrapper):
             # attn_weights: (B*num_heads, N, N) from custom MHA forward
             self.attn_weights.append(module._attn_weights)
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 2):
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 2, weighted_attn: bool = False):
         """Compute gradient-based concept activation maps.
         
         Args:
@@ -253,6 +253,8 @@ class TorchvisionGradWrapper(CopyAttrWrapper):
                                        retain_graph=True,
                                        create_graph=False,
                                        is_grads_batched=True)[0]  # (num_concepts, B*num_heads, N, N)
+            if weighted_attn:
+                grad = torch.einsum('m b h i j, b h j k -> m b h i k', grad, attn_weight.transpose(-2, -1))  # Matrix multiplication: grad @ attn_weight^T
             grad = torch.clamp(grad, min=0.)
             grad = rearrange(grad, 'm (b h) n1 n2 -> m b h n1 n2', h=self.num_heads)  # (num_concepts, B, num_heads, N, N)
             self.grads.append(grad)
