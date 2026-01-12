@@ -250,7 +250,8 @@ class TorchvisionWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
+        assert (maps_max - maps_min).all() != 0, "Division by zero: maps_max - maps_min contains zero values"
+        maps = (maps - maps_min) / (maps_max - maps_min)
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
 
@@ -389,7 +390,8 @@ class TorchvisionGradWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
+        assert (maps_max - maps_min).all() != 0, "Division by zero: maps_max - maps_min contains zero values"
+        maps = (maps - maps_min) / (maps_max - maps_min)
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
 
