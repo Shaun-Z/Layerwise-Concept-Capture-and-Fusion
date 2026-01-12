@@ -120,7 +120,7 @@ def test_grad_wrapper(model, batch_size, layer_indices):
 
     if wrapper.attn_weights:
         attn_weights = torch.stack(wrapper.attn_weights, dim=0)
-        assert attn_weights.shape == (len(layer_indices), batch_size, 197, 197)
+        assert attn_weights.shape == (len(layer_indices), batch_size*wrapper.num_heads, 197, 197)
     if wrapper.block_outputs:
         block_outputs = torch.stack(wrapper.block_outputs, dim=0)
         assert block_outputs.shape == (len(layer_indices), 197, batch_size, 768)
