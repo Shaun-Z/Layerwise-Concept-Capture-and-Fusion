@@ -32,7 +32,7 @@ layer_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 prompts = ['a photo of cats', 'a photo of a remote control', 'a photo of a laptop']
 
 # %%
-wrapper = detect_and_wrap(model, prefer='openclip', layer_indices=layer_indices)
+wrapper = detect_and_wrap(model, prefer='openclip', use_grad=False, layer_indices=layer_indices)
 
 # %%
 text = tokenizer(prompts).to(device)
@@ -49,10 +49,6 @@ image_batch = torch.stack(images, dim=0).to(device)
 # %%
 features = wrapper.encode_image(image_batch)
 print(f"Features shape: {features.shape}")
-
-# %%
-attn_weights = torch.stack(wrapper.attn_weights, dim=0)
-print(f"Attention weights shape: {attn_weights.shape}")
 
 # %%
 wrapper.dot_concept_vectors(text_embeddings)
