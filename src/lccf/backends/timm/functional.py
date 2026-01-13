@@ -58,6 +58,8 @@ def Pseudo_Attention_forward(
     x = attn @ v_reshaped  # (B*num_heads, 1, head_dim)
     
     # Reshape back to (B, 1, C)
+    # Note: attn_dim may differ from num_heads*head_dim in some timm versions
+    # when using asymmetric attention dimensions. Fallback to default calculation.
     attn_dim = getattr(self, 'attn_dim', self.num_heads * self.head_dim)
     x = x.reshape(B, self.num_heads, 1, self.head_dim)
     x = x.transpose(1, 2).reshape(B, 1, attn_dim)
