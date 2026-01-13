@@ -57,8 +57,9 @@ def test_hooks(model, batch_size, layer_indices):
     wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
     output = wrapper(dummy_input)
 
-    # result is transposed to (N, B, D) format in torchvision wrapper
-    assert torch.stack(wrapper.result, dim=0).shape == (len(layer_indices), 197, batch_size, 768)
+    # block_ins is transposed to (N, B, D) format in torchvision wrapper
+    assert len(wrapper.block_ins) == len(layer_indices)
+    assert torch.stack(wrapper.block_ins, dim=0).shape == (len(layer_indices), 197, batch_size, 768)
 
 
 @pytest.mark.parametrize("batch_size, layer_indices, num_concepts", [
@@ -74,7 +75,7 @@ def test_concept_vectors(model, batch_size, layer_indices, num_concepts):
     dummy_input = torch.randn(batch_size, 3, 224, 224)
     wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
     output = wrapper(dummy_input)
-    assert torch.stack(wrapper.result, dim=0).shape == (len(layer_indices), 197, batch_size, 768)
+    assert len(wrapper.block_ins) == len(layer_indices)
 
     wrapper.dot_concept_vectors(concept_vectors)
     assert torch.stack(wrapper.maps, dim=0).shape == (len(layer_indices), 14, 14, batch_size, num_concepts)
@@ -93,7 +94,7 @@ def test_aggregate_maps(model, layer_indices, num_concepts):
     wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
     
     output = wrapper(dummy_input)
-    assert torch.stack(wrapper.result, dim=0).shape == (len(layer_indices), 197, 1, 768)
+    assert len(wrapper.block_ins) == len(layer_indices)
     
     wrapper.dot_concept_vectors(concept_vectors)
     assert torch.stack(wrapper.maps, dim=0).shape == (len(layer_indices), 14, 14, 1, num_concepts)
@@ -102,6 +103,28 @@ def test_aggregate_maps(model, layer_indices, num_concepts):
     # Aggregated maps should be (B, num_concepts, H*patch_size, W*patch_size)
     # With patch_size=16 and grid_size=14, output should be (1, num_concepts, 224, 224)
     assert maps.shape == (1, num_concepts, 224, 224)
+
+
+@pytest.mark.parametrize("batch_size, layer_indices, num_concepts", [
+                                (10, [0, 11], 8),
+                                ])
+def test_pseudo_wrapper(model, batch_size, layer_indices, num_concepts):
+    # Generate random concept vectors in the hidden_dim space
+    concept_vectors = torch.randn(num_concepts, 768)
+    concept_vectors = torch.nn.functional.normalize(concept_vectors, dim=-1)
+
+    dummy_input = torch.randn(batch_size, 3, 224, 224)
+    wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+    
+    output = wrapper(dummy_input)
+    assert len(wrapper.block_ins) == len(layer_indices)
+    wrapper.dot_concept_vectors(concept_vectors)  # Use concept_vectors
+    sim_bms = torch.stack(wrapper.sim_bms, dim=0)
+    assert sim_bms.shape == (len(layer_indices), batch_size, num_concepts)
+    grads = torch.stack(wrapper.grads, dim=0)
+    assert grads.shape == (len(layer_indices), num_concepts, batch_size, wrapper.num_heads, 1, 197)
+    maps = torch.stack(wrapper.maps, dim=0)
+    assert maps.shape == (len(layer_indices), 14, 14, batch_size, num_concepts)
 
 
 @pytest.mark.parametrize("batch_size, layer_indices", [
