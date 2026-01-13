@@ -8,7 +8,7 @@ import types
 
 # CopyAttrWrapper is defined in lccf.wrap
 from ...wrap import CopyAttrWrapper
-from .functional import Attention_forward
+from .functional import Attention_forward, Pseudo_Attention_forward
 
 """
 Description:
@@ -31,112 +31,128 @@ class TimmWrapper(CopyAttrWrapper):
     - Attention: Combined qkv + proj
     - Final layers: model.norm vs ln_post + proj
     - GELU: Uses exact GELU (approximate='none')
+    
+    This wrapper uses pseudo mode for gradient computation, similar to OpenCLIPWrapper.
     """
     def __init__(self, model: Any, layer_indices: Optional[List[int]] = None, include_private: bool = False):
         # The copying behavior is done by the parent class CopyAttrWrapper (tiling the model's attributes)
         super().__init__(model, layer_indices=layer_indices, include_private=include_private)
         
-        self.reset()
-        
         # Store patch info for later use
         self._patch_size = model.patch_embed.proj.kernel_size[0]
         self._embed_dim = model.embed_dim
+        self.num_heads = model.blocks[0].attn.num_heads
         
-        # Register hooks to the specified layers to capture attention outputs
-        # timm uses pre-norm: x = x + attn(norm1(x)), x = x + mlp(norm2(x))
-        for idx in layer_indices:
-            block = self.blocks[idx]
-            
-            # Hook on attention projection output
-            block.attn.proj.register_forward_hook(self._save_attn_proj_output)  # (b, n, d)
-            # Hook on norm2 to scale by LayerNorm
-            block.norm2.register_forward_hook(self._aggregate_norm2)  # (b, n, d)
-            # Hook on MLP fc1
-            block.mlp.fc1.register_forward_hook(self._aggregate_fc1)
-            # Hook on MLP fc2
-            block.mlp.fc2.register_forward_hook(self._aggregate_fc2)  # (b, n, d)
-            # Final hook on block output
-            block.register_forward_hook(self._finalize_hook)  # (b, n, d)
+        self.reset()
+        
+        # Register hooks in normal mode to capture block inputs
+        self.switch_to_normal_mode()
 
     def reset(self):
         """Reset the stored results and maps."""
-        self.tmp = None
-        self.result = []
+        self.block_ins = []
+        self.attn_weight = None
+        self.sim_bms = []
+        self.grads = []
         self.maps = []
+        self.pseudo_handles = []
+        self.normal_handles = []
+        # Keep these for backward compatibility
+        self.result = []
         self.normed_clss = []
 
-    def _save_attn_proj_output(self, module, input, output):
-        # timm attention proj output: (B, N, D)
-        self.tmp = output.detach()
-    
-    def _aggregate_norm2(self, module, input, output):
-        # input[0] is the input to norm2: (B, N, D)
-        # We need to account for the LayerNorm scaling
-        std = input[0].std(dim=-1).detach()
-        self.tmp /= rearrange(std, 'b n -> b n 1')
-        self.tmp *= module.weight
-    
-    def _aggregate_fc1(self, module, input, output):
-        # Apply fc1 weight transformation
-        self.tmp = self.tmp @ module.weight.T
-        # timm uses exact GELU: approximate='none'
-        # Gradient of exact GELU: GELU(x) = x * Φ(x) where Φ is the CDF of standard normal
-        # d/dx GELU(x) = Φ(x) + x * φ(x) where φ is the PDF
-        x_ = self.tmp
-        # Standard normal CDF and PDF
-        sqrt_2 = math.sqrt(2.0)
-        phi = 0.5 * (1.0 + torch.erf(x_ / sqrt_2))  # CDF
-        pdf = torch.exp(-0.5 * x_ * x_) / math.sqrt(2.0 * math.pi)  # PDF
-        grad = phi + x_ * pdf
-        self.tmp = self.tmp * grad
-    
-    def _aggregate_fc2(self, module, input, output):
-        # Apply fc2 weight transformation
-        self.tmp = self.tmp @ module.weight.T
-    
-    def _finalize_hook(self, module, input, output):
-        # Block output: (B, N, D)
-        # Extract CLS token (first token)
-        cls = output[:, :1, ...]  # (B, 1, D)
-        
-        # Apply final LayerNorm scaling
-        std = cls.std(dim=-1).detach()
-        self.tmp /= rearrange(std, 'b 1 -> b 1 1')
-        self.tmp *= self.norm.weight  # timm uses model.norm as final LayerNorm
-        
-        # For timm ViT classification models, there's typically a head projection
-        # But for feature extraction, we use the normalized features directly
-        # Note: Unlike OpenCLIP, timm doesn't have a separate projection after norm
-        # The head is a classification head, not a feature projection
-        
-        # Apply the classification head weight for consistency with feature dimension
-        # However, for concept vectors, we work in the embed_dim space
-        cls_encoded = self.norm(cls)  # (B, 1, D)
-        val = cls_encoded.norm(dim=-1, keepdim=True)  # (B, 1, 1)
-        self.tmp /= val
-        
-        self.normed_clss.append(F.normalize(cls_encoded, dim=-1))
-        
-        # Transpose to (N, B, D) to match OpenCLIP format for dot_concept_vectors
-        self.result.append(rearrange(self.tmp, 'b n d -> n b d'))
+    def _save_block_input(self, module, input, output):
+        # input is a tuple, input[0] is the actual input tensor
+        # timm block input: (B, N, D)
+        # Transpose to (N, B, D) to match OpenCLIP format
+        self.block_ins.append(input[0].transpose(0, 1))  # (N, B, D)
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor):
-        """Compute concept activation maps.
+    def switch_to_pseudo_mode(self):
+        """Switch the Attention modules to pseudo mode that returns attention weights."""
+        for handle in self.normal_handles:
+            handle.remove()
+        self.normal_handles = []
+        for idx in self._requested_hook_indices:
+            block = self.blocks[idx]
+            # Override attention forward method to pseudo mode (only attend to CLS token)
+            block.attn.forward = types.MethodType(Pseudo_Attention_forward, block.attn)
+            for name, param in block.named_parameters():
+                param.requires_grad = True
+            self.pseudo_handles.append(block.attn.register_forward_hook(self._save_attn_hook))
+
+    def switch_to_normal_mode(self):
+        """Switch back to the normal Attention modules."""
+        for handle in self.pseudo_handles:
+            handle.remove()
+        self.pseudo_handles = []
+        for idx in self._requested_hook_indices:
+            block = self.blocks[idx]
+            self.normal_handles.append(block.register_forward_hook(self._save_block_input))
+            # Restore attention forward method
+            block.attn.forward = types.MethodType(Attention_forward, block.attn)
+            for name, param in block.named_parameters():
+                param.requires_grad = False
+
+    def _save_attn_hook(self, module, input, output):
+        # attn_weights: (B*num_heads, 1, N) from Pseudo_Attention_forward
+        self.attn_weight = module._attn_weights
+
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 2):
+        """Compute gradient-based concept activation maps using pseudo mode.
         
         Args:
             concept_vectors (torch.Tensor): [num_concepts, dim] - normalized concept vectors
+            power (int): Power for similarity scaling. Default: 2
         """
-        w = h = int(math.sqrt(self.result[0].shape[0] - 1))  # Exclude CLS token
-        for i, res in enumerate(self.result):
-            # res: (N, B, D) where N = 1 + H*W (CLS + patches)
-            prod = torch.einsum('n b d, m d -> n b m', res, concept_vectors)
-            # normed_clss[i]: (B, 1, D) - transpose to (1, B, D)
-            normed_cls = rearrange(self.normed_clss[i], 'b 1 d -> 1 b d')
-            weight = torch.einsum('n b d, m d -> n b m', normed_cls, concept_vectors)
-            prod = prod * weight
-            map = torch.clamp(prod - prod.mean(dim=0, keepdim=True), min=0.)  # negative gradient
-            map = rearrange(map[1:, ...], '(h w) b m -> h w b m', h=h, w=w)  # Exclude CLS token
-            self.maps.append(map)
+        w = h = int(math.sqrt(self.block_ins[0].shape[0] - 1))  # Exclude CLS token
+        self.switch_to_pseudo_mode()
+        for idx, data_in in zip(self._requested_hook_indices, self.block_ins):
+            self.zero_grad()
+            block = self.blocks[idx]
+            # data_in: (N, B, D), transpose to (B, N, D) for timm
+            x = data_in.transpose(0, 1)
+            
+            # Run through the block
+            # timm block: x = x + attn(norm1(x)), x = x + mlp(norm2(x))
+            # We need to run the block manually to get the pseudo attention output
+            x_norm = block.norm1(x)
+            attn_out = block.attn(x_norm)  # Returns (1, B, D) in pseudo mode
+            # attn_out is (1, B, D), transpose back and add residual for CLS only
+            cls_out = attn_out.squeeze(0) + x[:, 0, :]  # (B, D)
+            # Apply norm2 and mlp only to CLS token
+            cls_norm2 = block.norm2(cls_out)
+            cls_mlp = block.mlp(cls_norm2)
+            cls_feat = cls_out + cls_mlp  # (B, D)
+            
+            # Apply final LayerNorm
+            latent_feat = F.normalize(self.norm(cls_feat), dim=-1)  # (B, D)
+            
+            # Compute similarity with concept vectors
+            sim_bm = torch.einsum('b d, m d -> b m', latent_feat, concept_vectors)  # (B, num_concepts)
+            if power == 0:
+                weight = torch.ones_like(sim_bm)
+            else:
+                weight = torch.abs(sim_bm.clone().detach()).pow(power)
+                sim_bm *= weight  # (B, num_concepts)
+            sim = sim_bm.sum(dim=0)  # (B, num_concepts) -> (num_concepts)
+            self.sim_bms.append(weight)
+            
+            # Compute gradients of sim w.r.t. attn_weight
+            eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
+            grad = torch.autograd.grad(outputs=sim, inputs=self.attn_weight,
+                                       grad_outputs=eye,
+                                       retain_graph=True,
+                                       create_graph=False,
+                                       is_grads_batched=True)[0]  # (num_concepts, B*num_heads, 1, N)
+            
+            grad = torch.clamp(grad, min=0.)
+            grad = rearrange(grad, 'm (b h) n1 n2 -> m b h n1 n2', h=self.num_heads)  # (num_concepts, B, num_heads, 1, N)
+            self.grads.append(grad)
+            image_relevance = grad.mean(dim=2).squeeze(-2)[..., 1:]  # (num_concepts, B, N-1) Exclude CLS token
+            expl_map = rearrange(image_relevance, 'm b (h w) -> h w b m', w=w, h=h)
+            self.maps.append(expl_map)
+        
+        self.switch_to_normal_mode()
 
     def aggregate_layerwise_maps(self):
         """Aggregate the stored maps across all requested layers.
@@ -149,8 +165,10 @@ class TimmWrapper(CopyAttrWrapper):
         maps = torch.stack(self.maps, dim=0)
         maps = torch.einsum('l h w b m -> h w b m', maps)
         maps = rearrange(maps, 'h w b m -> b m h w')
-        
-        maps = (maps - maps.min()) / (maps.max() - maps.min() + 1e-8)
+
+        maps_min = maps.amin(dim=(-2, -1), keepdim=True)
+        maps_max = maps.amax(dim=(-2, -1), keepdim=True)
+        maps = (maps - maps_min) / (maps_max - maps_min)
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
 

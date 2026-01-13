@@ -10,6 +10,140 @@ from typing import Optional
 from torch.nn.functional import _mha_shape_check, _canonical_mask, _none_or_dtype, _in_projection_packed, _check_key_padding_mask, pad, softmax, dropout, linear
 
 
+def Pseudo_MultiheadAttention_forward_batch_first(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        key_padding_mask: Optional[Tensor] = None,
+        need_weights: bool = True,
+        attn_mask: Optional[Tensor] = None,
+        average_attn_weights: bool = False,
+        is_causal: bool = False,
+    ) -> tuple[Tensor, Optional[Tensor]]:
+    """
+    Pseudo MultiheadAttention forward for batch_first=True that only attends to CLS token.
+    This is used by TorchvisionWrapper in pseudo mode.
+    
+    Input format: (B, N, D) when batch_first=True
+    Output format: (1, B, D) - only the CLS token output, transposed to match OpenCLIP format
+    """
+    # For batch_first, we need to transpose to (N, B, D) for the MHA computation
+    if self.batch_first:
+        query = query.transpose(0, 1)
+        key = key.transpose(0, 1)
+        value = value.transpose(0, 1)
+    
+    tgt_len, bsz, embed_dim = query.shape
+    src_len = key.shape[0]
+    num_heads = self.num_heads
+    head_dim = embed_dim // num_heads
+    
+    # Compute in-projection
+    q, k, v = _in_projection_packed(query, key, value, self.in_proj_weight, self.in_proj_bias)
+    
+    # Prep attention mask
+    if attn_mask is not None:
+        attn_mask = _canonical_mask(
+            mask=attn_mask,
+            mask_name="attn_mask",
+            other_type=None,
+            other_name="",
+            target_type=query.dtype,
+            check_other=False,
+        )
+        if attn_mask.dim() == 2:
+            attn_mask = attn_mask.unsqueeze(0)
+    
+    # Handle key padding mask
+    if key_padding_mask is not None:
+        key_padding_mask = _canonical_mask(
+            mask=key_padding_mask,
+            mask_name="key_padding_mask",
+            other_type=_none_or_dtype(attn_mask),
+            other_name="attn_mask",
+            target_type=query.dtype,
+        )
+    
+    # Reshape q, k, v for multihead attention and make them batch first
+    q = q.view(tgt_len, bsz * num_heads, head_dim).transpose(0, 1)
+    k = k.view(src_len, bsz * num_heads, head_dim).transpose(0, 1)
+    v = v.view(src_len, bsz * num_heads, head_dim).transpose(0, 1)
+    
+    # Handle key padding mask
+    if key_padding_mask is not None:
+        key_padding_mask = (
+            key_padding_mask.view(bsz, 1, 1, src_len)
+            .expand(-1, num_heads, -1, -1)
+            .reshape(bsz * num_heads, 1, src_len)
+        )
+        if attn_mask is None:
+            attn_mask = key_padding_mask
+        else:
+            attn_mask = attn_mask + key_padding_mask
+    
+    # Compute attention
+    q_scaled = q * math.sqrt(1.0 / float(head_dim))
+    
+    if attn_mask is not None:
+        attn_output_weights = torch.baddbmm(attn_mask, q_scaled, k.transpose(-2, -1))
+    else:
+        attn_output_weights = torch.bmm(q_scaled, k.transpose(-2, -1))
+    
+    attn_output_weights = softmax(attn_output_weights, dim=-1)
+    
+    # Only keep CLS token attention weights (only attend to CLS token)
+    attn_output_weights_cls = attn_output_weights[:, :1, :]  # (B*num_heads, 1, N)
+    
+    # Store attention weights on the module for later retrieval
+    self._attn_weights = attn_output_weights_cls
+    
+    dropout_p = self.dropout if self.training else 0.0
+    if dropout_p > 0.0:
+        attn_dropped = dropout(attn_output_weights_cls, p=dropout_p)
+    else:
+        attn_dropped = attn_output_weights_cls
+    
+    attn_output = torch.bmm(attn_dropped, v)  # (B*num_heads, 1, head_dim)
+    
+    attn_output = attn_output.transpose(0, 1).contiguous().view(1 * bsz, embed_dim)
+    attn_output = linear(attn_output, self.out_proj.weight, self.out_proj.bias)
+    attn_output = attn_output.view(1, bsz, embed_dim)
+    
+    # Return in (1, B, D) format to match OpenCLIP pseudo wrapper
+    return attn_output, attn_output_weights_cls
+
+
+def Pseudo_EncoderBlock_forward(self, input: Tensor) -> Tensor:
+    """
+    Pseudo EncoderBlock forward that only processes CLS token using pseudo attention.
+    
+    This function replaces the default torchvision EncoderBlock.forward in pseudo mode
+    to only attend to the CLS token, matching the OpenCLIP pseudo wrapper behavior.
+    
+    Args:
+        self: The EncoderBlock module instance
+        input: Input tensor of shape (B, N, D)
+        
+    Returns:
+        output: (B, D) - only the CLS token output
+    """
+    torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
+    x = self.ln_1(input)
+    # Use pseudo attention that only attends to CLS token
+    attn_out, attn_weights = self.self_attention(x, x, x, need_weights=True, average_attn_weights=False)
+    # attn_out is (1, B, D), store attention weights
+    self._attn_weights = attn_weights  # (B*num_heads, 1, N)
+    x = self.dropout(attn_out)  # (1, B, D)
+    # Add residual for CLS token only
+    cls_out = x.squeeze(0) + input[:, 0, :]  # (B, D)
+    
+    # Apply ln_2 and mlp only to CLS token
+    y = self.ln_2(cls_out)
+    y = self.mlp(y)
+    return cls_out + y  # (B, D)
+
+
 def MultiheadAttention_forward_batch_first(
         self,
         query: Tensor,
