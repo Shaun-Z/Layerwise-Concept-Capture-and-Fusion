@@ -210,17 +210,17 @@ class TimmGradWrapper(CopyAttrWrapper):
             # Override attention forward to return attention weights
             block.attn.forward = types.MethodType(Attention_forward, block.attn)
             
-            block.attn.register_forward_hook(self._save_attn_hook)  # (B, N, D), (B*num_heads, N, N)
-            block.register_forward_hook(self._save_block_hook)  # (B, N, D)
+            block.attn.register_forward_hook(self._save_attn_hook)  # (bsz, N, D), (bsz*num_heads, N, N)
+            block.register_forward_hook(self._save_block_hook)  # (bsz, N, D)
 
     def _save_attn_hook(self, module, input, output):
         # Retrieve attention weights stored by the modified forward
-        # attn_weights: (B, num_heads, N, N) - stored in original shape
+        # attn_weights: (bsz, num_heads, N, N) - stored in original shape
         if hasattr(module, '_attn_weights'):
             self.attn_weights.append(module._attn_weights)
 
     def _save_block_hook(self, module, input, output):
-        # Block output: (B, N, D)
+        # Block output: (bsz, N, D)
         self.block_outputs.append(output)
 
     def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 1, weighted_attn: bool = False):
@@ -230,41 +230,44 @@ class TimmGradWrapper(CopyAttrWrapper):
             concept_vectors (torch.Tensor): [num_concepts, dim] - normalized concept vectors
             power (int): Power for similarity scaling. Default: 2
         """
-        w = h = int(math.sqrt(self.block_outputs[0].shape[1] - 1))  # Exclude CLS token, layout is (B, N, D)
+        w = h = int(math.sqrt(self.block_outputs[0].shape[1] - 1))  # Exclude CLS token, layout is (bsz, N, D)
         for i, (block_output, attn_weight) in enumerate(zip(self.block_outputs, self.attn_weights)):
             # Zero gradients of the model
             self.zero_grad()
             
-            # block_output: (B, N, D)
-            cls_feat = block_output[:, 0, ...]  # (B, D) - CLS token
+            # block_output: (bsz, N, D)
+            cls_feat = block_output[:, 0, ...]  # (bsz, D) - CLS token
             
             # For timm, we work in embed_dim space (no projection like OpenCLIP)
-            latent_feat = F.normalize(self.norm(cls_feat), dim=-1)  # (B, D)
+            latent_feat = F.normalize(self.norm(cls_feat), dim=-1)  # (bsz, D)
             
             # Compute similarity with concept vectors
-            sim_bm = torch.einsum('b d, m d -> b m', latent_feat, concept_vectors)  # (B, num_concepts)
-            weight = torch.abs(sim_bm.clone().detach()).pow(power)
-            sim_bm *= weight  # (B, num_concepts)
-            sim = sim_bm.sum(dim=0)  # (B, num_concepts) -> (num_concepts)
-            self.sim_bms.append(weight)
+            sim_bm = torch.einsum('b d, m d -> b m', latent_feat, concept_vectors)  # (bsz, num_concepts)
+            if power == 0:
+                weight = torch.ones_like(sim_bm)
+            else:
+                weight = torch.abs(sim_bm.clone().detach()).pow(power)
+                sim_bm *= weight  # (bsz, num_concepts)
+            sim = sim_bm.sum(dim=0)  # (bsz, num_concepts) -> (num_concepts)
+            self.sim_bms.append(weight) # (num_concepts)
             
             # Compute gradients of sim w.r.t. attn_weight
-            # attn_weight shape: (B, num_heads, N, N)
+            # attn_weight shape: (bsz, num_heads, N, N)
             eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
             
             grad = torch.autograd.grad(outputs=sim, inputs=attn_weight,
                                        grad_outputs=eye,
                                        retain_graph=True,
                                        create_graph=False,
-                                       is_grads_batched=True)[0]  # (num_concepts, B, num_heads, N, N)
+                                       is_grads_batched=True)[0]  # (num_concepts, bsz, num_heads, N, N)
             if weighted_attn:
                 grad = torch.einsum('m b h i j, b h j k -> m b h i k', grad, attn_weight.transpose(-2, -1))  # Matrix multiplication: grad @ attn_weight^T
             grad = torch.clamp(grad, min=0.)
-            # grad is already in shape (num_concepts, B, num_heads, N, N)
+            # grad is already in shape (num_concepts, bsz, num_heads, N, N)
             self.grads.append(grad)
             
             # Average over heads and query positions, exclude CLS token
-            image_relevance = grad.mean(dim=2).mean(dim=-2)[..., 1:]  # (num_concepts, B, N-1)
+            image_relevance = grad.mean(dim=2).mean(dim=-2)[..., 1:]  # (num_concepts, bsz, N-1)
             expl_map = rearrange(image_relevance, 'm b (h w) -> h w b m', w=w, h=h)
             self.maps.append(expl_map)
 
@@ -272,7 +275,7 @@ class TimmGradWrapper(CopyAttrWrapper):
         """Aggregate the stored maps across all requested layers.
         
         Returns:
-            torch.Tensor: Aggregated attention maps of shape [B, num_concepts, H, W]
+            torch.Tensor: Aggregated attention maps of shape [bsz, num_concepts, H, W]
         """
         if not self.maps:
             raise ValueError("No attention maps stored. Please run a forward pass and compute dot_concept_vectors first.")

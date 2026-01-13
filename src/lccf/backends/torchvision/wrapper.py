@@ -239,10 +239,13 @@ class TorchvisionGradWrapper(CopyAttrWrapper):
             
             # Compute similarity with concept vectors
             sim_bm = torch.einsum('b d, m d -> b m', latent_feat, concept_vectors)  # (B, num_concepts)
-            weight = torch.abs(sim_bm.clone().detach()).pow(power)
-            sim_bm *= weight  # (B, num_concepts)
-            self.sim_bms.append(weight)
+            if power == 0:
+                weight = torch.ones_like(sim_bm)
+            else:
+                weight = torch.abs(sim_bm.clone().detach()).pow(power)
+                sim_bm *= weight  # (B, num_concepts)
             sim = sim_bm.sum(dim=0)  # (B, num_concepts) -> (num_concepts)
+            self.sim_bms.append(weight)
             
             # Compute gradients of sim w.r.t. attn_weight
             # attn_weight shape: (B*num_heads, N, N) from custom MHA forward

@@ -19,7 +19,8 @@ from lccf.utils import visualize, visualize_layerwise_maps
 from open_clip import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 
 # %%
-model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-16', pretrained='laion2b_s34b_b88k')
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-16', pretrained='laion2b_s34b_b88k', device=device)
 model.eval()
 preprocess = wrap_clip_preprocess(preprocess, image_size=224)
 tokenizer = open_clip.get_tokenizer(model_name='ViT-B-16')
@@ -34,10 +35,7 @@ prompts = ['a photo of cats', 'a photo of a remote control', 'a photo of a lapto
 wrapper = detect_and_wrap(model, prefer='openclip', layer_indices=layer_indices)
 
 # %%
-device = wrapper._get_device_for_call()
-
-# %%
-text = tokenizer(prompts)
+text = tokenizer(prompts).to(device)
 text_embeddings = model.encode_text(text, normalize=True)
 
 # %%
