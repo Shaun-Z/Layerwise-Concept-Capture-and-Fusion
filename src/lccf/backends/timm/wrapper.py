@@ -241,7 +241,7 @@ class TimmGradWrapper(CopyAttrWrapper):
         # Block output: (bsz, N, D)
         self.block_outputs.append(output)
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 1, weighted_attn: bool = False):
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, tk_idx: int = 0, power: int = 1, weighted_attn: bool = False):
         """Compute gradient-based concept activation maps.
         
         Args:
@@ -254,10 +254,10 @@ class TimmGradWrapper(CopyAttrWrapper):
             self.zero_grad()
             
             # block_output: (bsz, N, D)
-            cls_feat = block_output[:, 0, ...]  # (bsz, D) - CLS token
+            feat = block_output[:, tk_idx, ...]  # (bsz, D) - token at tk_idx
             
             # For timm, we work in embed_dim space (no projection like OpenCLIP)
-            latent_feat = F.normalize(self.norm(cls_feat), dim=-1)  # (bsz, D)
+            latent_feat = F.normalize(self.norm(feat), dim=-1)  # (bsz, D)
             
             # Compute similarity with concept vectors
             sim_bm = torch.einsum('b d, m d -> b m', latent_feat, concept_vectors)  # (bsz, num_concepts)

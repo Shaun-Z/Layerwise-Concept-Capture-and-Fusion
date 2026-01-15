@@ -215,7 +215,7 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
     def _save_block_hook(self, module, input, output):
         self.block_outputs.append(output)
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 2, weighted_attn: bool = False):
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, tk_idx: int = 0, power: int = 2, weighted_attn: bool = False):
         """_summary_
             Call this function before foward.
         Args:
@@ -224,8 +224,8 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
         w = h = int(math.sqrt(self.block_outputs[0].shape[0]-1))  # Exclude CLS token
         for i, (block_output, attn_weight) in enumerate(zip(self.block_outputs, self.attn_weights)):
             self.visual.zero_grad()
-            cls_feat = block_output[1, ...]    # (batch_size, 768)
-            latent_feat = F.normalize(self.visual.ln_post(cls_feat) @ self.visual.proj, dim=-1) # (bsz, 512)
+            feat = block_output[tk_idx, ...]    # (batch_size, 768)
+            latent_feat = F.normalize(self.visual.ln_post(feat) @ self.visual.proj, dim=-1) # (bsz, 512)
 
             # Compute similarity with concept vectors
             sim_bm = torch.einsum('b d, m d ->b m', latent_feat, concept_vectors)  # (bsz, num_concepts)

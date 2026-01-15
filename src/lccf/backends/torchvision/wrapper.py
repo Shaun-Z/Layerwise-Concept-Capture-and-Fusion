@@ -239,7 +239,7 @@ class TorchvisionGradWrapper(CopyAttrWrapper):
             # attn_weights: (B*num_heads, N, N) from custom MHA forward
             self.attn_weights.append(module._attn_weights)
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 2, weighted_attn: bool = False):
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, tk_idx: int = 0, power: int = 2, weighted_attn: bool = False):
         """Compute gradient-based concept activation maps.
         
         Args:
@@ -252,10 +252,10 @@ class TorchvisionGradWrapper(CopyAttrWrapper):
             self.zero_grad()
             
             # block_output: (B, N, D)
-            cls_feat = block_output[:, 0, ...]  # (B, D) - CLS token
+            feat = block_output[:, tk_idx, ...]  # (B, D) - token at tk_idx
             
             # For torchvision, we work in hidden_dim space (no projection like OpenCLIP)
-            latent_feat = F.normalize(self.encoder.ln(cls_feat), dim=-1)  # (B, D)
+            latent_feat = F.normalize(self.encoder.ln(feat), dim=-1)  # (B, D)
             
             # Compute similarity with concept vectors
             sim_bm = torch.einsum('b d, m d -> b m', latent_feat, concept_vectors)  # (B, num_concepts)
