@@ -1,5 +1,5 @@
 # src/lccf/backends/openclip/wrapper.py
-from typing import Any, Iterable, List, Optional
+from typing import Any, Iterable, List, Optional, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -105,15 +105,25 @@ class OpenCLIPWrapper(CopyAttrWrapper):
     def _res_block_post_hook(self, module, input, output):
         return output[0, ...]  # (b, d)
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 2):
+    def dot_concept_vectors(self, concept_vectors: Union[torch.Tensor, List[torch.Tensor]], power: int = 2):
         """_summary_
             Call this function before foward.
         Args:
-            concept_vectors (torch.Tensor): [batch_size, dim]
+            concept_vectors (Union[torch.Tensor, List[torch.Tensor]]): [batch_size, dim] or a list of tensors with length matching layer_indices
+            power (int): Power for similarity scaling. Default: 2
         """
+        # Validate concept_vectors if it's a list
+        if isinstance(concept_vectors, list):
+            if len(concept_vectors) != len(self._requested_hook_indices):
+                raise ValueError(
+                    f"Length of concept_vectors list ({len(concept_vectors)}) must match "
+                    f"length of layer_indices ({len(self._requested_hook_indices)})"
+                )
         w = h = int(math.sqrt(self.block_ins[0].shape[0]-1))  # Exclude CLS token
         self.switch_to_pseudo_mode()
-        for idx, data_in in zip(self._requested_hook_indices, self.block_ins):
+        for i, (idx, data_in) in enumerate(zip(self._requested_hook_indices, self.block_ins)):
+            # Select concept_vector for current layer
+            cv = concept_vectors[i] if isinstance(concept_vectors, list) else concept_vectors
             self.visual.zero_grad()
             block = self.visual.transformer.resblocks[idx]
             #data_in (n, b, d)
@@ -121,7 +131,7 @@ class OpenCLIPWrapper(CopyAttrWrapper):
             latent_feat = F.normalize(self.visual.ln_post(cls_feat) @ self.visual.proj, dim=-1) # (bsz, 512)
 
             # Compute similarity with concept vectors
-            sim_bm = torch.einsum('b d, m d ->b m', latent_feat, concept_vectors)  # (bsz, num_concepts)
+            sim_bm = torch.einsum('b d, m d ->b m', latent_feat, cv)  # (bsz, num_concepts)
             if power == 0:
                 weight = torch.ones_like(sim_bm)
             else:
@@ -215,20 +225,32 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
     def _save_block_hook(self, module, input, output):
         self.block_outputs.append(output)
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor, tk_idx: int = 0, power: int = 2, weighted_attn: bool = False):
+    def dot_concept_vectors(self, concept_vectors: Union[torch.Tensor, List[torch.Tensor]], tk_idx: int = 0, power: int = 2, weighted_attn: bool = False):
         """_summary_
             Call this function before foward.
         Args:
-            concept_vectors (torch.Tensor): [batch_size, dim]
+            concept_vectors (Union[torch.Tensor, List[torch.Tensor]]): [batch_size, dim] or a list of tensors with length matching layer_indices
+            tk_idx (int): Token index for feature extraction. Default: 0 (CLS token)
+            power (int): Power for similarity scaling. Default: 2
+            weighted_attn (bool): Whether to weight gradients by attention. Default: False
         """
+        # Validate concept_vectors if it's a list
+        if isinstance(concept_vectors, list):
+            if len(concept_vectors) != len(self._requested_hook_indices):
+                raise ValueError(
+                    f"Length of concept_vectors list ({len(concept_vectors)}) must match "
+                    f"length of layer_indices ({len(self._requested_hook_indices)})"
+                )
         w = h = int(math.sqrt(self.block_outputs[0].shape[0]-1))  # Exclude CLS token
         for i, (block_output, attn_weight) in enumerate(zip(self.block_outputs, self.attn_weights)):
+            # Select concept_vector for current layer
+            cv = concept_vectors[i] if isinstance(concept_vectors, list) else concept_vectors
             self.visual.zero_grad()
             feat = block_output[tk_idx, ...]    # (batch_size, 768)
             latent_feat = F.normalize(self.visual.ln_post(feat) @ self.visual.proj, dim=-1) # (bsz, 512)
 
             # Compute similarity with concept vectors
-            sim_bm = torch.einsum('b d, m d ->b m', latent_feat, concept_vectors)  # (bsz, num_concepts)
+            sim_bm = torch.einsum('b d, m d ->b m', latent_feat, cv)  # (bsz, num_concepts)
             if power == 0:
                 weight = torch.ones_like(sim_bm)
             else:

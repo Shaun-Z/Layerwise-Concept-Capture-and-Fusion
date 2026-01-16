@@ -171,3 +171,68 @@ def test_concept_vectors_grad_wrapper(model, batch_size, layer_indices, num_conc
     assert maps.shape == (len(layer_indices), 14, 14, batch_size, num_concepts)
     exp_map = wrapper.aggregate_layerwise_maps()
     assert exp_map.shape == (batch_size, num_concepts, 224, 224)
+
+
+@pytest.mark.parametrize("batch_size, layer_indices, num_concepts_per_layer", [
+                                (5, [0, 11], [3, 4]),
+                                (3, [0, 5, 11], [2, 5, 3]),
+                                ])
+def test_concept_vectors_list(model, batch_size, layer_indices, num_concepts_per_layer):
+    """Test that concept_vectors can be passed as a list with one tensor per layer."""
+    # Create a list of concept vectors, one for each layer with different number of concepts
+    concept_vectors_list = [
+        torch.nn.functional.normalize(torch.randn(n, 768), dim=-1)
+        for n in num_concepts_per_layer
+    ]
+
+    dummy_input = torch.randn(batch_size, 3, 224, 224)
+    wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+    output = wrapper(dummy_input)
+    assert len(wrapper.block_ins) == len(layer_indices)
+
+    wrapper.dot_concept_vectors(concept_vectors_list)
+    
+    # Each layer should have a map with the corresponding number of concepts
+    assert len(wrapper.maps) == len(layer_indices)
+    for i, (expl_map, num_concepts) in enumerate(zip(wrapper.maps, num_concepts_per_layer)):
+        assert expl_map.shape == (14, 14, batch_size, num_concepts)
+
+
+@pytest.mark.parametrize("batch_size, layer_indices, num_concepts_per_layer", [
+                                (5, [0, 11], [3, 4]),
+                                ])
+def test_concept_vectors_list_grad_wrapper(model, batch_size, layer_indices, num_concepts_per_layer):
+    """Test that concept_vectors can be passed as a list for grad wrapper."""
+    # Create a list of concept vectors, one for each layer
+    concept_vectors_list = [
+        torch.nn.functional.normalize(torch.randn(n, 768), dim=-1).detach()
+        for n in num_concepts_per_layer
+    ]
+
+    dummy_input = torch.randn(batch_size, 3, 224, 224)
+    wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=True, layer_indices=layer_indices)
+    output = wrapper(dummy_input)
+    
+    wrapper.dot_concept_vectors(concept_vectors_list)
+    
+    # Each layer should have a map with the corresponding number of concepts
+    assert len(wrapper.maps) == len(layer_indices)
+    for i, (expl_map, num_concepts) in enumerate(zip(wrapper.maps, num_concepts_per_layer)):
+        assert expl_map.shape == (14, 14, batch_size, num_concepts)
+
+
+def test_concept_vectors_list_length_mismatch(model):
+    """Test that passing a list with wrong length raises ValueError."""
+    layer_indices = [0, 5, 11]
+    concept_vectors_list = [
+        torch.nn.functional.normalize(torch.randn(3, 768), dim=-1),
+        torch.nn.functional.normalize(torch.randn(4, 768), dim=-1),
+        # Missing third element - should raise ValueError
+    ]
+
+    dummy_input = torch.randn(2, 3, 224, 224)
+    wrapper = detect_and_wrap(model, prefer='torchvision', use_grad=False, layer_indices=layer_indices)
+    output = wrapper(dummy_input)
+
+    with pytest.raises(ValueError, match="Length of concept_vectors list"):
+        wrapper.dot_concept_vectors(concept_vectors_list)

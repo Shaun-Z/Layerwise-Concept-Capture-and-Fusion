@@ -1,5 +1,5 @@
 # src/lccf/backends/timm/wrapper.py
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 import torch
 import torch.nn.functional as F
 import math
@@ -97,16 +97,26 @@ class TimmWrapper(CopyAttrWrapper):
         # attn_weights: (B*num_heads, 1, N) from Pseudo_Attention_forward
         self.attn_weight = module._attn_weights
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 2):
+    def dot_concept_vectors(self, concept_vectors: Union[torch.Tensor, List[torch.Tensor]], power: int = 2):
         """Compute gradient-based concept activation maps using pseudo mode.
         
         Args:
-            concept_vectors (torch.Tensor): [num_concepts, dim] - normalized concept vectors
+            concept_vectors (Union[torch.Tensor, List[torch.Tensor]]): [num_concepts, dim] - normalized concept vectors
+                or a list of tensors with length matching layer_indices
             power (int): Power for similarity scaling. Default: 2
         """
+        # Validate concept_vectors if it's a list
+        if isinstance(concept_vectors, list):
+            if len(concept_vectors) != len(self._requested_hook_indices):
+                raise ValueError(
+                    f"Length of concept_vectors list ({len(concept_vectors)}) must match "
+                    f"length of layer_indices ({len(self._requested_hook_indices)})"
+                )
         w = h = int(math.sqrt(self.block_ins[0].shape[0] - 1))  # Exclude CLS token
         self.switch_to_pseudo_mode()
-        for idx, data_in in zip(self._requested_hook_indices, self.block_ins):
+        for i, (idx, data_in) in enumerate(zip(self._requested_hook_indices, self.block_ins)):
+            # Select concept_vector for current layer
+            cv = concept_vectors[i] if isinstance(concept_vectors, list) else concept_vectors
             self.zero_grad()
             block = self.blocks[idx]
             # data_in: (N, B, D), transpose to (B, N, D) for timm
@@ -128,7 +138,7 @@ class TimmWrapper(CopyAttrWrapper):
             latent_feat = F.normalize(self.norm(cls_feat), dim=-1)  # (B, D)
             
             # Compute similarity with concept vectors
-            sim_bm = torch.einsum('b d, m d -> b m', latent_feat, concept_vectors)  # (B, num_concepts)
+            sim_bm = torch.einsum('b d, m d -> b m', latent_feat, cv)  # (B, num_concepts)
             if power == 0:
                 weight = torch.ones_like(sim_bm)
             else:
@@ -241,15 +251,27 @@ class TimmGradWrapper(CopyAttrWrapper):
         # Block output: (bsz, N, D)
         self.block_outputs.append(output)
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor, tk_idx: int = 0, power: int = 1, weighted_attn: bool = False):
+    def dot_concept_vectors(self, concept_vectors: Union[torch.Tensor, List[torch.Tensor]], tk_idx: int = 0, power: int = 1, weighted_attn: bool = False):
         """Compute gradient-based concept activation maps.
         
         Args:
-            concept_vectors (torch.Tensor): [num_concepts, dim] - normalized concept vectors
-            power (int): Power for similarity scaling. Default: 2
+            concept_vectors (Union[torch.Tensor, List[torch.Tensor]]): [num_concepts, dim] - normalized concept vectors
+                or a list of tensors with length matching layer_indices
+            tk_idx (int): Token index for feature extraction. Default: 0 (CLS token)
+            power (int): Power for similarity scaling. Default: 1
+            weighted_attn (bool): Whether to weight gradients by attention. Default: False
         """
+        # Validate concept_vectors if it's a list
+        if isinstance(concept_vectors, list):
+            if len(concept_vectors) != len(self._requested_hook_indices):
+                raise ValueError(
+                    f"Length of concept_vectors list ({len(concept_vectors)}) must match "
+                    f"length of layer_indices ({len(self._requested_hook_indices)})"
+                )
         w = h = int(math.sqrt(self.block_outputs[0].shape[1] - 1))  # Exclude CLS token, layout is (bsz, N, D)
         for i, (block_output, attn_weight) in enumerate(zip(self.block_outputs, self.attn_weights)):
+            # Select concept_vector for current layer
+            cv = concept_vectors[i] if isinstance(concept_vectors, list) else concept_vectors
             # Zero gradients of the model
             self.zero_grad()
             
@@ -260,7 +282,7 @@ class TimmGradWrapper(CopyAttrWrapper):
             latent_feat = F.normalize(self.norm(feat), dim=-1)  # (bsz, D)
             
             # Compute similarity with concept vectors
-            sim_bm = torch.einsum('b d, m d -> b m', latent_feat, concept_vectors)  # (bsz, num_concepts)
+            sim_bm = torch.einsum('b d, m d -> b m', latent_feat, cv)  # (bsz, num_concepts)
             if power == 0:
                 weight = torch.ones_like(sim_bm)
             else:
