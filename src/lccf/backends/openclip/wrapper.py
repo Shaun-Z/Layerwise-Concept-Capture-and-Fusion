@@ -106,10 +106,11 @@ class OpenCLIPWrapper(CopyAttrWrapper):
         return output[0, ...]  # (b, d)
 
     def dot_concept_vectors(self, concept_vectors: Union[torch.Tensor, List[torch.Tensor]], power: int = 2):
-        """_summary_
-            Call this function before foward.
+        """Compute gradient-based concept activation maps using pseudo mode.
+        
         Args:
-            concept_vectors (Union[torch.Tensor, List[torch.Tensor]]): [batch_size, dim] or a list of tensors with length matching layer_indices
+            concept_vectors (Union[torch.Tensor, List[torch.Tensor]]): [num_concepts, dim] - normalized concept vectors
+                or a list of tensors with length matching layer_indices
             power (int): Power for similarity scaling. Default: 2
         """
         # Validate concept_vectors if it's a list
@@ -226,10 +227,11 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
         self.block_outputs.append(output)
 
     def dot_concept_vectors(self, concept_vectors: Union[torch.Tensor, List[torch.Tensor]], tk_idx: int = 0, power: int = 2, weighted_attn: bool = False):
-        """_summary_
-            Call this function before foward.
+        """Compute gradient-based concept activation maps.
+        
         Args:
-            concept_vectors (Union[torch.Tensor, List[torch.Tensor]]): [batch_size, dim] or a list of tensors with length matching layer_indices
+            concept_vectors (Union[torch.Tensor, List[torch.Tensor]]): [num_concepts, dim] - normalized concept vectors
+                or a list of tensors with length matching layer_indices
             tk_idx (int): Token index for feature extraction. Default: 0 (CLS token)
             power (int): Power for similarity scaling. Default: 2
             weighted_attn (bool): Whether to weight gradients by attention. Default: False
