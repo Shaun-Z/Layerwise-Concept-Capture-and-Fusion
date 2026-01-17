@@ -169,3 +169,90 @@ def test_concept_vectors_grad_wrapper(model, batch_size, layer_indices, num_conc
     assert maps.shape == (len(layer_indices), 14, 14, batch_size, num_concepts)
     exp_map = wrapper.aggregate_layerwise_maps()
     assert exp_map.shape == (batch_size, num_concepts, 224, 224)
+
+
+# =============================================================================
+# TimmTestWrapper Tests
+# =============================================================================
+
+from lccf.backends.timm.wrapper import TimmTestWrapper
+
+
+@pytest.mark.parametrize("batch_size, layer_indices", [
+                                (10, [1, 3, 5]),
+                                (2, [0, 4, 7, 11]),
+                                ])
+def test_timm_test_wrapper(model, batch_size, layer_indices):
+    # Test that we can create a TimmTestWrapper
+    wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
+    device = wrapper._get_device_for_call()
+    assert wrapper is not None
+    assert isinstance(device, torch.device)
+
+
+@pytest.mark.parametrize("batch_size, layer_indices", [
+                                (10, [0, 11]),
+                                (5, [0, 5, 11]),
+                                ])
+def test_timm_test_wrapper_forward(model, batch_size, layer_indices):
+    # Test that we can extract features from a dummy input
+    dummy_input = torch.randn(batch_size, 3, 224, 224)
+    wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
+    features = wrapper.forward_features(dummy_input)
+
+    assert wrapper.embed_dim == 768  # ViT-B-16 embed dim
+    assert features.shape == (batch_size, 197, 768)  # (B, N, D) with CLS token
+    assert len(wrapper.block_ins) == len(layer_indices)
+
+
+@pytest.mark.parametrize("batch_size, layer_indices", [
+                                (10, [0, 11]),
+                                (5, [0, 5, 11]),
+                                ])
+def test_timm_test_wrapper_compute_layerwise_gradients(model, batch_size, layer_indices):
+    # Test that compute_layerwise_gradients works and stores the expected outputs
+    dummy_input = torch.randn(batch_size, 3, 224, 224)
+    wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
+    features = wrapper.forward_features(dummy_input)
+    
+    assert len(wrapper.block_ins) == len(layer_indices)
+    
+    wrapper.compute_layerwise_gradients()
+    
+    # Check that attention gradients are stored for each layer
+    assert len(wrapper.attn_grads) == len(layer_indices)
+    # Check shape of attention gradients: (B, num_heads, 1, N)
+    for attn_grad in wrapper.attn_grads:
+        assert attn_grad.shape == (batch_size, wrapper.num_heads, 1, 197)
+    
+    # Check that CLS gradients are stored for each layer
+    assert len(wrapper.cls_grads) == len(layer_indices)
+    # Check shape of CLS gradients: (B, D)
+    for cls_grad in wrapper.cls_grads:
+        assert cls_grad.shape == (batch_size, 768)
+    
+    # Check that maps are stored for each layer
+    assert len(wrapper.maps) == len(layer_indices)
+    for expl_map in wrapper.maps:
+        assert expl_map.shape == (14, 14, batch_size)
+
+
+@pytest.mark.parametrize("batch_size, layer_indices", [
+                                (10, [0, 11]),
+                                (3, [0, 3, 6, 9, 11]),
+                                ])
+def test_timm_test_wrapper_aggregate_maps(model, batch_size, layer_indices):
+    # Test aggregation of layerwise maps
+    dummy_input = torch.randn(batch_size, 3, 224, 224)
+    wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
+    
+    features = wrapper.forward_features(dummy_input)
+    assert len(wrapper.block_ins) == len(layer_indices)
+    
+    wrapper.compute_layerwise_gradients()
+    assert len(wrapper.maps) == len(layer_indices)
+    
+    maps = wrapper.aggregate_layerwise_maps()
+    # Aggregated maps should be (B, 1, H*patch_size, W*patch_size)
+    # With patch_size=16 and grid_size=14, output should be (batch_size, 1, 224, 224)
+    assert maps.shape == (batch_size, 1, 224, 224)

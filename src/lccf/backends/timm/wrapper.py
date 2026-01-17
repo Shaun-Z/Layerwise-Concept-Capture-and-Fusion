@@ -314,3 +314,215 @@ class TimmGradWrapper(CopyAttrWrapper):
         self.grads = []
         self.maps = []
         self.sim_bms = []
+
+
+class TimmTestWrapper(CopyAttrWrapper):
+    """
+    A timm-specific wrapper that propagates gradients from the last layer backward through
+    transformer blocks, using CLS token gradients as concept vectors for each layer.
+    
+    Key behavior:
+    - Backpropagation starts from the last layer's output
+    - For mid layers, the gradient of the CLS comes from deeper layers
+    - During each block's backpropagation, stores:
+      1) attention_weight's grad
+      2) input CLS token's grad (serves as concept vector for the previous block)
+    - The start of each block's backpropagation is concept_vector * CLS
+    
+    This wrapper processes layers in reverse order (from deepest to shallowest).
+    """
+    def __init__(self, model: Any, layer_indices: Optional[List[int]] = None, include_private: bool = False):
+        # The copying behavior is done by the parent class CopyAttrWrapper
+        super().__init__(model, layer_indices=layer_indices, include_private=include_private)
+
+        # Store patch info for later use
+        self._patch_size = model.patch_embed.proj.kernel_size[0]
+        self._embed_dim = model.embed_dim
+        self.num_heads = model.blocks[0].attn.num_heads
+
+        self.reset()
+        
+        # Register hooks in normal mode to capture block inputs
+        self.switch_to_normal_mode()
+
+    def reset(self):
+        """Reset the stored results and maps."""
+        self.block_ins = []
+        self.attn_weight = None
+        self.attn_grads = []  # Store attention weight gradients
+        self.cls_grads = []   # Store input CLS token gradients
+        self.maps = []
+        self.pseudo_handles = []
+        self.normal_handles = []
+
+    def _save_block_input(self, module, input, output):
+        # input is a tuple, input[0] is the actual input tensor
+        # timm block input: (B, N, D)
+        # Transpose to (N, B, D) to match OpenCLIP format
+        self.block_ins.append(input[0].transpose(0, 1))  # (N, B, D)
+
+    def switch_to_pseudo_mode(self):
+        """Switch the Attention modules to pseudo mode that returns attention weights."""
+        for handle in self.normal_handles:
+            handle.remove()
+        self.normal_handles = []
+        for idx in self._requested_hook_indices:
+            block = self.blocks[idx]
+            # Override attention forward method to pseudo mode (only attend to CLS token)
+            block.attn.forward = types.MethodType(Pseudo_Attention_forward, block.attn)
+            for name, param in block.named_parameters():
+                param.requires_grad = True
+            self.pseudo_handles.append(block.attn.register_forward_hook(self._save_attn_hook))
+
+    def switch_to_normal_mode(self):
+        """Switch back to the normal Attention modules."""
+        for handle in self.pseudo_handles:
+            handle.remove()
+        self.pseudo_handles = []
+        for idx in self._requested_hook_indices:
+            block = self.blocks[idx]
+            self.normal_handles.append(block.register_forward_hook(self._save_block_input))
+            # Restore attention forward method
+            block.attn.forward = types.MethodType(Attention_forward, block.attn)
+            for name, param in block.named_parameters():
+                param.requires_grad = False
+
+    def _save_attn_hook(self, module, input, output):
+        # attn_weights: (B*num_heads, 1, N) from Pseudo_Attention_forward
+        self.attn_weight = module._attn_weights
+
+    def compute_layerwise_gradients(self, power: int = 2):
+        """Compute gradient-based concept activation maps using pseudo mode.
+        
+        Backpropagation starts from the last layer and uses the CLS gradient
+        from deeper layers as the concept vector for shallower layers.
+        
+        Args:
+            power (int): Power for similarity scaling. Default: 2
+        """
+        w = h = int(math.sqrt(self.block_ins[0].shape[0] - 1))  # Exclude CLS token
+        self.switch_to_pseudo_mode()
+        
+        # Process layers in reverse order (from deepest to shallowest)
+        sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
+        
+        # Initialize concept_vector as None for the first (deepest) layer
+        concept_vector = None
+        
+        for enum_idx, layer_idx in sorted_indices:
+            self.zero_grad()
+            block = self.blocks[layer_idx]
+            data_in = self.block_ins[enum_idx]
+            
+            # data_in: (N, B, D), transpose to (B, N, D) for timm
+            x = data_in.transpose(0, 1)
+            
+            # Get CLS token from input - requires grad for computing cls_grad
+            input_cls = x[:, 0, :].clone()
+            input_cls.requires_grad_(True)
+            
+            # Create input with the grad-enabled CLS token
+            x_with_grad = x.clone()
+            x_with_grad[:, 0, :] = input_cls
+            
+            # Run through the block
+            x_norm = block.norm1(x_with_grad)
+            attn_out = block.attn(x_norm)  # Returns (1, B, D) in pseudo mode
+            # attn_out is (1, B, D), transpose back and add residual for CLS only
+            cls_out = attn_out.squeeze(0) + x_with_grad[:, 0, :]  # (B, D)
+            # Apply norm2 and mlp only to CLS token
+            cls_norm2 = block.norm2(cls_out)
+            cls_mlp = block.mlp(cls_norm2)
+            cls_feat = cls_out + cls_mlp  # (B, D)
+            
+            # Apply final LayerNorm
+            latent_feat = F.normalize(self.norm(cls_feat), dim=-1)  # (B, D)
+            
+            # Compute similarity
+            if concept_vector is None:
+                # For the last (deepest) layer, use the normalized feature as the concept
+                # Start backpropagation from latent_feat itself
+                sim = latent_feat.sum(dim=0).sum()  # Sum over batch and dimensions
+            else:
+                # For other layers, use the concept_vector from the deeper layer
+                sim_bm = torch.einsum('b d, d -> b', latent_feat, concept_vector)  # (B,)
+                if power == 0:
+                    weight = torch.ones_like(sim_bm)
+                else:
+                    weight = torch.abs(sim_bm.clone().detach()).pow(power)
+                    sim_bm = sim_bm * weight  # (B,)
+                sim = sim_bm.sum()  # Sum over batch
+            
+            # Compute gradients of sim w.r.t. attn_weight and input_cls
+            grads = torch.autograd.grad(
+                outputs=sim,
+                inputs=[self.attn_weight, input_cls],
+                retain_graph=True,
+                create_graph=False,
+                allow_unused=True
+            )
+            
+            attn_grad = grads[0]  # (B*num_heads, 1, N)
+            cls_grad = grads[1]   # (B, D) - gradient of input CLS token
+            
+            # Store attention gradient
+            if attn_grad is not None:
+                attn_grad = torch.clamp(attn_grad, min=0.)
+                attn_grad = rearrange(attn_grad, '(b h) n1 n2 -> b h n1 n2', h=self.num_heads)  # (B, num_heads, 1, N)
+                self.attn_grads.insert(0, attn_grad)  # Insert at beginning since we're going in reverse
+                
+                # Compute explanation map
+                image_relevance = attn_grad.mean(dim=1).squeeze(-2)[..., 1:]  # (B, N-1) Exclude CLS token
+                expl_map = rearrange(image_relevance, 'b (h w) -> h w b', w=w, h=h)  # (h, w, B)
+                self.maps.insert(0, expl_map)  # Insert at beginning
+            
+            # Store CLS gradient and use it as concept_vector for the previous (shallower) layer
+            if cls_grad is not None:
+                self.cls_grads.insert(0, cls_grad)  # Insert at beginning
+                # Average over batch to get single concept vector for next layer
+                concept_vector = F.normalize(cls_grad.mean(dim=0), dim=-1)  # (D,)
+        
+        self.switch_to_normal_mode()
+
+    def aggregate_layerwise_maps(self):
+        """Aggregate the stored maps across all requested layers.
+        
+        Returns:
+            torch.Tensor: Aggregated attention maps of shape [B, 1, H, W]
+        """
+        if not self.maps:
+            raise ValueError("No attention maps stored. Please run a forward pass and compute_layerwise_gradients first.")
+        maps = torch.stack(self.maps, dim=0)  # (num_layers, h, w, B)
+        maps = maps.sum(dim=0)  # (h, w, B) - sum across layers
+        maps = rearrange(maps, 'h w b -> b h w').unsqueeze(1)  # (B, 1, h, w)
+
+        maps_min = maps.amin(dim=(-2, -1), keepdim=True)
+        maps_max = maps.amax(dim=(-2, -1), keepdim=True)
+        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
+        maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
+        return maps
+
+    def _get_device_for_call(self, device: Optional[str] = None):
+        # Try to get the device from the original model's parameters, otherwise use the passed device or cpu
+        orig = self.original_model()
+        if device is not None:
+            return torch.device(device)
+        try:
+            # Find the device of the first parameter
+            for p in orig.parameters():
+                return p.device
+        except Exception:
+            pass
+        return torch.device("cpu")
+
+    def to(self, *args, **kwargs):
+        # Move the original model to the target device as well
+        orig = self.original_model()
+        try:
+            if hasattr(orig, "to"):
+                orig.to(*args, **kwargs)
+        except Exception:
+            # Ignore errors when moving the original model, but still try to call the parent class's to
+            pass
+        # CopyAttrWrapper has no tensor buffers of its own, still call the parent class
+        return super().to(*args, **kwargs)

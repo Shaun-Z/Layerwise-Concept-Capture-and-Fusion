@@ -5,7 +5,7 @@ from .types import TimmViT, TorchViT, OpenCLIPViT
 from .wrap import CopyAttrWrapper
 # Import the specific backend wrapper (if it exists)
 from .backends.openclip.wrapper import OpenCLIPWrapper, OpenCLIPGradWrapper
-from .backends.timm.wrapper import TimmWrapper, TimmGradWrapper
+from .backends.timm.wrapper import TimmWrapper, TimmGradWrapper, TimmTestWrapper
 from .backends.torchvision.wrapper import TorchvisionWrapper, TorchvisionGradWrapper
 
 def detect_and_wrap(model: Any,
