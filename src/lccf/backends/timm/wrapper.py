@@ -337,7 +337,6 @@ class TimmTestWrapper(CopyAttrWrapper):
 
         # Store patch info for later use
         self._patch_size = model.patch_embed.proj.kernel_size[0]
-        self._embed_dim = model.embed_dim
         self.num_heads = model.blocks[0].attn.num_heads
 
         self.reset()
@@ -409,6 +408,11 @@ class TimmTestWrapper(CopyAttrWrapper):
         # Initialize concept_vector as None for the first (deepest) layer
         concept_vector = None
         
+        # We'll collect results in reverse order (deepest to shallowest), then reverse at the end
+        attn_grads_reversed = []
+        cls_grads_reversed = []
+        maps_reversed = []
+        
         for enum_idx, layer_idx in sorted_indices:
             self.zero_grad()
             block = self.blocks[layer_idx]
@@ -469,18 +473,23 @@ class TimmTestWrapper(CopyAttrWrapper):
             if attn_grad is not None:
                 attn_grad = torch.clamp(attn_grad, min=0.)
                 attn_grad = rearrange(attn_grad, '(b h) n1 n2 -> b h n1 n2', h=self.num_heads)  # (B, num_heads, 1, N)
-                self.attn_grads.insert(0, attn_grad)  # Insert at beginning since we're going in reverse
+                attn_grads_reversed.append(attn_grad)
                 
                 # Compute explanation map
                 image_relevance = attn_grad.mean(dim=1).squeeze(-2)[..., 1:]  # (B, N-1) Exclude CLS token
                 expl_map = rearrange(image_relevance, 'b (h w) -> h w b', w=w, h=h)  # (h, w, B)
-                self.maps.insert(0, expl_map)  # Insert at beginning
+                maps_reversed.append(expl_map)
             
             # Store CLS gradient and use it as concept_vector for the previous (shallower) layer
             if cls_grad is not None:
-                self.cls_grads.insert(0, cls_grad)  # Insert at beginning
+                cls_grads_reversed.append(cls_grad)
                 # Average over batch to get single concept vector for next layer
                 concept_vector = F.normalize(cls_grad.mean(dim=0), dim=-1)  # (D,)
+        
+        # Reverse to get forward order (shallowest to deepest)
+        self.attn_grads = attn_grads_reversed[::-1]
+        self.cls_grads = cls_grads_reversed[::-1]
+        self.maps = maps_reversed[::-1]
         
         self.switch_to_normal_mode()
 
