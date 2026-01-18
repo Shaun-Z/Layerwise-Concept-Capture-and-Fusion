@@ -390,13 +390,17 @@ class TimmTestWrapper(CopyAttrWrapper):
         # attn_weights: (B*num_heads, 1, N) from Pseudo_Attention_forward
         self.attn_weight = module._attn_weights
 
-    def compute_layerwise_gradients(self, power: int = 2):
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 2):
         """Compute gradient-based concept activation maps using pseudo mode.
         
-        Backpropagation starts from the last layer and uses the CLS gradient
-        from deeper layers as the concept vector for shallower layers.
+        Backpropagation starts from the last layer using the provided concept_vectors
+        (typically from the classifier head), then uses the CLS gradient from deeper 
+        layers as the concept vector for shallower layers.
         
         Args:
+            concept_vectors (torch.Tensor): [num_concepts, dim] - normalized concept vectors.
+                For the last (deepest) layer, this is used as the concept vector.
+                Typically extracted from model.head.weight for a specific class.
             power (int): Power for similarity scaling. Default: 2
         """
         w = h = int(math.sqrt(self.block_ins[0].shape[0] - 1))  # Exclude CLS token
@@ -405,8 +409,9 @@ class TimmTestWrapper(CopyAttrWrapper):
         # Process layers in reverse order (from deepest to shallowest)
         sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
         
-        # Initialize concept_vector as None for the first (deepest) layer
-        concept_vector = None
+        # For the first (deepest) layer, use the provided concept_vectors
+        # Average across concepts to get a single concept vector
+        concept_vector = F.normalize(concept_vectors.mean(dim=0), dim=-1)  # (D,)
         
         # We'll collect results in reverse order (deepest to shallowest), then reverse at the end
         attn_grads_reversed = []
@@ -442,20 +447,14 @@ class TimmTestWrapper(CopyAttrWrapper):
             # Apply final LayerNorm
             latent_feat = F.normalize(self.norm(cls_feat), dim=-1)  # (B, D)
             
-            # Compute similarity
-            if concept_vector is None:
-                # For the last (deepest) layer, use the normalized feature as the concept
-                # Start backpropagation from latent_feat itself
-                sim = latent_feat.sum(dim=0).sum()  # Sum over batch and dimensions
+            # Compute similarity using concept_vector
+            sim_bm = torch.einsum('b d, d -> b', latent_feat, concept_vector)  # (B,)
+            if power == 0:
+                weight = torch.ones_like(sim_bm)
             else:
-                # For other layers, use the concept_vector from the deeper layer
-                sim_bm = torch.einsum('b d, d -> b', latent_feat, concept_vector)  # (B,)
-                if power == 0:
-                    weight = torch.ones_like(sim_bm)
-                else:
-                    weight = torch.abs(sim_bm.clone().detach()).pow(power)
-                    sim_bm = sim_bm * weight  # (B,)
-                sim = sim_bm.sum()  # Sum over batch
+                weight = torch.abs(sim_bm.clone().detach()).pow(power)
+                sim_bm = sim_bm * weight  # (B,)
+            sim = sim_bm.sum()  # Sum over batch
             
             # Compute gradients of sim w.r.t. attn_weight and input_cls
             grads = torch.autograd.grad(
