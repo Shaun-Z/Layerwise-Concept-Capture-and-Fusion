@@ -29,6 +29,9 @@ class OpenCLIPFastWrapper(CopyAttrWrapper):
 
         self.patch_size = self.visual.patch_size[0]
         self.num_heads = self.visual.transformer.resblocks[0].attn.num_heads
+
+        self.pseudo_handles = []
+        self.normal_handles = []
         
         self.reset()
 
@@ -45,8 +48,6 @@ class OpenCLIPFastWrapper(CopyAttrWrapper):
         self.sim_bms = []
         self.grads = []
         self.maps = []
-        self.pseudo_handles = []
-        self.normal_handles = []
 
     def _save_block_input(self, module, input, output):
         self.block_ins.append(input[0])  # (n, b, d)
@@ -317,6 +318,9 @@ class OpenCLIPCVWrapper(CopyAttrWrapper):
         self.patch_size = self.visual.patch_size[0]
         self.num_heads = self.visual.transformer.resblocks[0].attn.num_heads
         self._num_blocks = num_blocks
+
+        self.pseudo_handles = []
+        self.normal_handles = []
         
         # Store the user's requested layer_indices for aggregation only
         if layer_indices is None:
@@ -337,8 +341,6 @@ class OpenCLIPCVWrapper(CopyAttrWrapper):
         self.cls_grads = []   # Store input CLS token gradients
         self.maps = []
         self.sim_bms = []     # Store similarity weights for visualization
-        self.pseudo_handles = []
-        self.normal_handles = []
 
     def _save_block_input(self, module, input, output):
         self.block_ins.append(input[0])  # (n, b, d)

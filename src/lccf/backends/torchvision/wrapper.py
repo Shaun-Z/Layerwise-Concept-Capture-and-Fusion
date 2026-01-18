@@ -43,6 +43,9 @@ class TorchvisionFastWrapper(CopyAttrWrapper):
         self._hidden_dim = model.hidden_dim
         self.num_heads = model.encoder.layers[0].self_attention.num_heads
         
+        self.pseudo_handles = []
+        self.normal_handles = []
+
         self.reset()
         
         # Register hooks in normal mode to capture block inputs
@@ -55,8 +58,6 @@ class TorchvisionFastWrapper(CopyAttrWrapper):
         self.sim_bms = []
         self.grads = []
         self.maps = []
-        self.pseudo_handles = []
-        self.normal_handles = []
         # Keep these for backward compatibility
         self.result = []
         self.normed_clss = []
@@ -170,32 +171,6 @@ class TorchvisionFastWrapper(CopyAttrWrapper):
         maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
-
-    def _get_device_for_call(self, device: Optional[str] = None):
-        # Try to get the device from the original model's parameters, otherwise use the passed device or cpu
-        orig = self.original_model()
-        if device is not None:
-            return torch.device(device)
-        try:
-            # Find the device of the first parameter
-            for p in orig.parameters():
-                return p.device
-        except Exception:
-            pass
-        return torch.device("cpu")
-
-    def to(self, *args, **kwargs):
-        # Move the original model to the target device as well
-        orig = self.original_model()
-        try:
-            if hasattr(orig, "to"):
-                orig.to(*args, **kwargs)
-        except Exception:
-            # Ignore errors when moving the original model, but still try to call the parent class's to
-            pass
-        # CopyAttrWrapper has no tensor buffers of its own, still call the parent class (it will move parameters registered to the wrapper)
-        return super().to(*args, **kwargs)
-
 
 class TorchvisionWrapper(CopyAttrWrapper):
     """
@@ -348,6 +323,9 @@ class TorchvisionCVWrapper(CopyAttrWrapper):
         self._hidden_dim = model.hidden_dim
         self.num_heads = model.encoder.layers[0].self_attention.num_heads
         self._num_blocks = num_blocks
+
+        self.pseudo_handles = []
+        self.normal_handles = []
         
         # Store the user's requested layer_indices for aggregation only
         if layer_indices is None:
@@ -368,8 +346,6 @@ class TorchvisionCVWrapper(CopyAttrWrapper):
         self.cls_grads = []   # Store input CLS token gradients
         self.maps = []
         self.sim_bms = []     # Store similarity weights for visualization
-        self.pseudo_handles = []
-        self.normal_handles = []
 
     def _save_block_input(self, module, input, output):
         # input is a tuple, input[0] is the actual input tensor
@@ -542,22 +518,3 @@ class TorchvisionCVWrapper(CopyAttrWrapper):
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
 
-    def _get_device_for_call(self, device: Optional[str] = None):
-        orig = self.original_model()
-        if device is not None:
-            return torch.device(device)
-        try:
-            for p in orig.parameters():
-                return p.device
-        except Exception:
-            pass
-        return torch.device("cpu")
-
-    def to(self, *args, **kwargs):
-        orig = self.original_model()
-        try:
-            if hasattr(orig, "to"):
-                orig.to(*args, **kwargs)
-        except Exception:
-            pass
-        return super().to(*args, **kwargs)

@@ -42,6 +42,9 @@ class TimmFastWrapper(CopyAttrWrapper):
         self._patch_size = model.patch_embed.proj.kernel_size[0]
         self._embed_dim = model.embed_dim
         self.num_heads = model.blocks[0].attn.num_heads
+
+        self.pseudo_handles = []
+        self.normal_handles = []
         
         self.reset()
         
@@ -55,8 +58,6 @@ class TimmFastWrapper(CopyAttrWrapper):
         self.sim_bms = []
         self.grads = []
         self.maps = []
-        self.pseudo_handles = []
-        self.normal_handles = []
         # Keep these for backward compatibility
         self.result = []
         self.normed_clss = []
@@ -322,6 +323,9 @@ class TimmCVWrapper(CopyAttrWrapper):
         self._patch_size = model.patch_embed.proj.kernel_size[0]
         self.num_heads = model.blocks[0].attn.num_heads
         self._num_blocks = num_blocks
+
+        self.pseudo_handles = []
+        self.normal_handles = []
         
         # Store the user's requested layer_indices for aggregation only
         if layer_indices is None:
@@ -342,8 +346,6 @@ class TimmCVWrapper(CopyAttrWrapper):
         self.cls_grads = []   # Store input CLS token gradients
         self.maps = []
         self.sim_bms = []     # Store similarity weights for visualization
-        self.pseudo_handles = []
-        self.normal_handles = []
 
     def _save_block_input(self, module, input, output):
         # input is a tuple, input[0] is the actual input tensor
