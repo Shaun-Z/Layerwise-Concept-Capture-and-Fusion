@@ -106,7 +106,13 @@ for i, (m, s) in enumerate(zip(wrapper.maps, wrapper.sim_bms)):
 # wrapper.maps and wrapper.sim_bms already contain only data for layer_indices
 # They can be passed directly to visualize_layerwise_maps
 print(f"\n=== Visualizing attention maps for layers {layer_indices} ===")
-visualize_layerwise_maps(image, wrapper.maps, sim_bms=wrapper.sim_bms, text_prompts=concept_names, mean_std=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
+visualize_layerwise_maps(image,
+                         wrapper.maps,
+                         sim_bms=wrapper.sim_bms,
+                         text_prompts=concept_names,
+                         mean_std=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                        #  normalize_each_map=True
+                         )
 
 # %%
 # Aggregate maps across layer_indices
