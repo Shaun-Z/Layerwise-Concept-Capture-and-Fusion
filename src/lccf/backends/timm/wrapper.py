@@ -358,7 +358,7 @@ class TimmCVWrapper(CopyAttrWrapper):
         
         Uses CV_Pseudo_Attention_forward which stops gradient flow through attention weights,
         allowing gradients to flow only through V path. This ensures that when computing
-        gradients w.r.t. input CLS, the gradient only comes from V, not from attention weights.
+        gradients with respect to input CLS, the gradient only comes from V, not from attention weights.
         """
         for handle in self.normal_handles:
             handle.remove()
