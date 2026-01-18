@@ -42,7 +42,7 @@ preprocess = wrap_timm_preprocess(preprocess, image_size=224)
 # Define which layers to use for aggregation
 # Note: Gradients are computed for ALL layers (0-11), but only these layers
 # will be used in aggregate_layerwise_maps()
-layer_indices = [0, 3, 6, 9, 11]
+layer_indices = [0, 1, 2]
 
 # %%
 # Extract concept vector from classifier head (same approach as timm_cat_remote.py)
