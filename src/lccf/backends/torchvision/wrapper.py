@@ -17,7 +17,7 @@ Description:
  """
 
 
-class TorchvisionWrapper(CopyAttrWrapper):
+class TorchvisionFastWrapper(CopyAttrWrapper):
     """
     A torchvision-specific derivative of CopyAttrWrapper that provides convenient methods for forward.
     Important: This wrapper assumes that you are passing in a torchvision model (typically the model returned by torchvision.models.vit_b_16).
@@ -197,7 +197,7 @@ class TorchvisionWrapper(CopyAttrWrapper):
         return super().to(*args, **kwargs)
 
 
-class TorchvisionGradWrapper(CopyAttrWrapper):
+class TorchvisionWrapper(CopyAttrWrapper):
     """
     A torchvision-specific derivative of CopyAttrWrapper that uses autograd to capture gradients of attention maps.
     This mirrors the functionality of OpenCLIPGradWrapper for torchvision models.

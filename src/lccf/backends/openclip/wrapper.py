@@ -17,7 +17,7 @@ Description:
  - If there is no preprocess, you can pass in tensor type inputs; if you give PIL.Image and there is no preprocess, it will report an error and give you a suggestion.
  """
 
-class OpenCLIPWrapper(CopyAttrWrapper):
+class OpenCLIPFastWrapper(CopyAttrWrapper):
     """
     An open-clip-specific derivative of CopyAttrWrapper that provides convenient methods for encode_text / encode_image.
     Important: This wrapper assumes that you are passing in the model of open_clip (typically the model returned by open_clip.create_model_and_transforms).
@@ -59,7 +59,7 @@ class OpenCLIPWrapper(CopyAttrWrapper):
         for idx in self._requested_hook_indices:
             block = self.visual.transformer.resblocks[idx]
             assert hasattr(block, 'attention'), "The block does not have attention attribute."
-            block.attention = types.MethodType(OpenCLIPWrapper.__attention_with_weights, block) # Override attention method: `need_weights=True`
+            block.attention = types.MethodType(OpenCLIPFastWrapper.__attention_with_weights, block) # Override attention method: `need_weights=True`
             block.attn.forward = types.MethodType(Pseudo_MultiheadAttention_forward, block.attn)   # Override MHA forward method: save attn maps
             for name, param in block.named_parameters():
                 param.requires_grad = True
@@ -164,7 +164,7 @@ class OpenCLIPWrapper(CopyAttrWrapper):
         maps = F.interpolate(maps, scale_factor=self.visual.patch_size[0], mode='bilinear')
         return maps
 
-class OpenCLIPGradWrapper(CopyAttrWrapper):
+class OpenCLIPWrapper(CopyAttrWrapper):
     """
     An open-clip-specific derivative of CopyAttrWrapper that provides convenient methods for encode_text / encode_image.
     Important: This wrapper assumes that you are passing in the model of open_clip (typically the model returned by open_clip.create_model_and_transforms).
@@ -186,7 +186,7 @@ class OpenCLIPGradWrapper(CopyAttrWrapper):
             assert hasattr(block, 'attention'), "The block does not have attention attribute."
             for name, param in block.named_parameters():
                 param.requires_grad = True
-            block.attention = types.MethodType(OpenCLIPGradWrapper.__attention_with_weights, block) # Override attention method: `need_weights=True`
+            block.attention = types.MethodType(OpenCLIPWrapper.__attention_with_weights, block) # Override attention method: `need_weights=True`
             block.attn.forward = types.MethodType(MultiheadAttention_forward, block.attn)   # Override MHA forward method: save attn maps
 
             block.attn.register_forward_hook(self._save_attn_hook)    # (n, b, d)

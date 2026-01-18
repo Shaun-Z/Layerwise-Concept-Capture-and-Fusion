@@ -1,59 +1,83 @@
 # src/my_transformers/detect.py
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Literal
 from torchvision.transforms import Compose, Resize, InterpolationMode, Normalize, ToTensor
 from .types import TimmViT, TorchViT, OpenCLIPViT
 from .wrap import CopyAttrWrapper
 # Import the specific backend wrapper (if it exists)
-from .backends.openclip.wrapper import OpenCLIPWrapper, OpenCLIPGradWrapper, OpenCLIPCVWrapper
-from .backends.timm.wrapper import TimmWrapper, TimmGradWrapper, TimmCVWrapper
-from .backends.torchvision.wrapper import TorchvisionWrapper, TorchvisionGradWrapper, TorchvisionCVWrapper
+from .backends.openclip.wrapper import OpenCLIPWrapper, OpenCLIPFastWrapper, OpenCLIPCVWrapper
+from .backends.timm.wrapper import TimmWrapper, TimmFastWrapper, TimmCVWrapper
+from .backends.torchvision.wrapper import TorchvisionWrapper, TorchvisionFastWrapper, TorchvisionCVWrapper
 
 def detect_and_wrap(model: Any,
                     layer_indices: Optional[List[int]] = None,
                     prefer: Optional[str] = None,
-                    use_grad: bool = True,
+                    mode: Literal["standard", "fast", "cv"] = "standard",
                     include_private: bool = False) -> CopyAttrWrapper:
     """
     Simply determines and returns a specific backend CopyAttrWrapper instance based on isinstance.
     prefer: optional, string: 'openclip'|'timm'|'torchvision' to force branching (if matched)
-    use_grad: if True, use gradient-based wrapper (GradWrapper), otherwise use the standard wrapper
+    mode: "standard", "fast", or "cv" to select the type of wrapper
     """
     if model is None:
         raise ValueError("model cannot be None")
 
     # prefer preferred (override automatic judgment if needed)
     if prefer == "openclip" and isinstance(model.visual, OpenCLIPViT):
-        if use_grad:
-            return OpenCLIPGradWrapper(model, layer_indices=layer_indices, include_private=include_private)
-        else:
+        if mode == "standard":
             return OpenCLIPWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fast":
+            return OpenCLIPFastWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "cv":
+            return OpenCLIPCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
     if prefer == "timm" and isinstance(model, TimmViT):
-        if use_grad:
-            return TimmGradWrapper(model, layer_indices=layer_indices, include_private=include_private)
-        else:
+        if mode == "standard":
             return TimmWrapper(model, layer_indices=layer_indices, include_private=include_private)
-    if prefer == "torchvision" and isinstance(model, TorchViT):
-        if use_grad:
-            return TorchvisionGradWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fast":
+            return TimmFastWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "cv":
+            return TimmCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
         else:
+            raise ValueError(f"Unknown mode: {mode}")
+    if prefer == "torchvision" and isinstance(model, TorchViT):
+        if mode == "standard":
             return TorchvisionWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fast":
+            return TorchvisionFastWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "cv":
+            return TorchvisionCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
 
     # Default type-based judgment (order can be adjusted)
     if isinstance(model.visual, OpenCLIPViT):
-        if use_grad:
-            return OpenCLIPGradWrapper(model, layer_indices=layer_indices, include_private=include_private)
-        else:
+        if mode == "standard":
             return OpenCLIPWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fast":
+            return OpenCLIPFastWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "cv":
+            return OpenCLIPCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
     if isinstance(model, TimmViT):
-        if use_grad:
-            return TimmGradWrapper(model, layer_indices=layer_indices, include_private=include_private)
-        else:
+        if mode == "standard":
             return TimmWrapper(model, layer_indices=layer_indices, include_private=include_private)
-    if isinstance(model, TorchViT):
-        if use_grad:
-            return TorchvisionGradWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fast":
+            return TimmFastWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "cv":
+            return TimmCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
         else:
+            raise ValueError(f"Unknown mode: {mode}")
+    if isinstance(model, TorchViT):
+        if mode == "standard":
             return TorchvisionWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fast":
+            return TorchvisionFastWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "cv":
+            return TorchvisionCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
 
     # fallback: Raise error
     raise TypeError("Unable to detect the backend type of the model, or the backend is not supported. Please ensure the model is an open_clip, timm, or torchvision ViT model, or use the prefer parameter to force specify the backend.")

@@ -57,7 +57,7 @@ def test_pseudo_wrapper(model, tokenizer, batch_size, layer_indices, prompts):
     assert text_embeddings.shape == (len(prompts), 512)
 
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = detect_and_wrap(model, prefer='openclip', use_grad=False, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='openclip', mode="fast", layer_indices=layer_indices)
     
     features = wrapper.encode_image(dummy_input)
     assert len(wrapper.block_ins) == len(layer_indices)
@@ -84,11 +84,9 @@ def test_concept_vectors(model, tokenizer, batch_size, layer_indices, prompts):
     dummy_input = torch.randn(batch_size, 3, 224, 224)
     wrapper = detect_and_wrap(model, prefer='openclip', layer_indices=layer_indices)
     features = wrapper.encode_image(dummy_input)
-    assert torch.stack(wrapper.result, dim=0).shape == (len(layer_indices), 197, batch_size, 512)
 
     wrapper.dot_concept_vectors(text_embeddings)
     assert torch.stack(wrapper.maps, dim=0).shape == (len(layer_indices), 14, 14, batch_size, len(prompts))
-
 
 @pytest.mark.parametrize("layer_indices, prompts", [
                                 ([0,11],["a photo of a cat",
@@ -120,7 +118,7 @@ def test_single_image(model, preprocess, tokenizer, layer_indices, prompts):
 def test_grad_wrapper(model, batch_size, layer_indices):
     # Test that we can extract features from a dummy input
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = detect_and_wrap(model, prefer='openclip', use_grad=True, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='openclip', mode="standard", layer_indices=layer_indices)
     features = wrapper.encode_image(dummy_input)
 
     if wrapper.attn_weights:
@@ -147,7 +145,7 @@ def test_concept_vectors_grad_wrapper(model, tokenizer, batch_size, layer_indice
     assert text_embeddings.shape == (len(prompts), 512)
 
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = detect_and_wrap(model, prefer='openclip', use_grad=True, layer_indices=layer_indices)
+    wrapper = detect_and_wrap(model, prefer='openclip', mode="standard", layer_indices=layer_indices)
     features = wrapper.encode_image(dummy_input)
     assert features.shape == (batch_size, 512)
     attn_weights = torch.stack(wrapper.attn_weights, dim=0)

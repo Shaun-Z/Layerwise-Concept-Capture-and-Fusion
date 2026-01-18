@@ -17,7 +17,7 @@ Description:
  """
 
 
-class TimmWrapper(CopyAttrWrapper):
+class TimmFastWrapper(CopyAttrWrapper):
     """
     A timm-specific derivative of CopyAttrWrapper that provides convenient methods for forward_features.
     Important: This wrapper assumes that you are passing in a timm model (typically the model returned by timm.create_model).
@@ -198,10 +198,10 @@ class TimmWrapper(CopyAttrWrapper):
         return super().to(*args, **kwargs)
 
 
-class TimmGradWrapper(CopyAttrWrapper):
+class TimmWrapper(CopyAttrWrapper):
     """
     A timm-specific derivative of CopyAttrWrapper that uses autograd to capture gradients of attention maps.
-    This mirrors the functionality of OpenCLIPGradWrapper for timm models.
+    This mirrors the functionality of OpenCLIPFastWrapper for timm models.
     
     Key differences from TimmWrapper:
     - Uses torch.autograd.grad to compute gradients of attention weights

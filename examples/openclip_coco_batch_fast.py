@@ -32,7 +32,7 @@ layer_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
 prompts = ['a photo of cats', 'a photo of a remote control', 'a photo of a laptop']
 
 # %%
-wrapper = detect_and_wrap(model, prefer='openclip', use_grad=False, layer_indices=layer_indices)
+wrapper = detect_and_wrap(model, prefer='openclip', mode="fast", layer_indices=layer_indices)
 
 # %%
 text = tokenizer(prompts).to(device)

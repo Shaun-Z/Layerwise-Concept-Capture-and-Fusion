@@ -18,7 +18,7 @@ tokenizer = open_clip.get_tokenizer(model_name='ViT-B-16')
 layer_indices = [0,1,2,3,4,5,6,7,8,9,10,11]
 
 # %%
-prompts = ["a photo of cats", " a photo of a red sofa", "a photo of a remote control"]
+prompts = ["a photo of cats", " a photo of red", "a photo of a remote control"]
 
 # %%
 wrapper = detect_and_wrap(model, prefer='openclip', layer_indices=layer_indices)
@@ -41,7 +41,13 @@ wrapper.dot_concept_vectors(text_embeddings)
 maps = torch.stack(wrapper.maps, dim=0)  # (num_layers, H, W, B, num_concepts)
 
 # %%
-visualize_layerwise_maps(image, wrapper.maps, sim_bms=wrapper.sim_bms, text_prompts=prompts, mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD))
+visualize_layerwise_maps(image,
+                         wrapper.maps,
+                         sim_bms=wrapper.sim_bms,
+                         text_prompts=prompts,
+                         mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD),
+                        #  normalize_each_map=True
+                         )
 
 # %%
 maps_aggregated = wrapper.aggregate_layerwise_maps()

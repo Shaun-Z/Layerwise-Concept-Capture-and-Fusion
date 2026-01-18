@@ -51,10 +51,6 @@ features = wrapper.encode_image(image_batch)
 print(f"Features shape: {features.shape}")
 
 # %%
-attn_weights = torch.stack(wrapper.attn_weights, dim=0)
-print(f"Attention weights shape: {attn_weights.shape}")
-
-# %%
 wrapper.dot_concept_vectors(text_embeddings)
 
 # %%
