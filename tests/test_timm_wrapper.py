@@ -220,33 +220,34 @@ def test_timm_test_wrapper_dot_concept_vectors(model, batch_size, layer_indices)
     assert len(wrapper.block_ins) == 12
     
     # Extract concept vector from classifier head (like in timm_cat_remote.py)
-    concept_vectors = model.head.weight[281].unsqueeze(0).detach()  # tabby cat class
+    num_concepts = 1
+    concept_vectors = model.head.weight[281].unsqueeze(0).detach()  # tabby cat class, shape (1, D)
     concept_vectors = torch.nn.functional.normalize(concept_vectors, dim=-1)
     
     wrapper.dot_concept_vectors(concept_vectors)
     
     # Check that attention gradients are stored for ALL 12 layers
     assert len(wrapper.attn_grads) == 12
-    # Check shape of attention gradients: (B, num_heads, 1, N)
+    # Check shape of attention gradients: (M, B, num_heads, 1, N)
     for attn_grad in wrapper.attn_grads:
-        assert attn_grad.shape == (batch_size, wrapper.num_heads, 1, 197)
+        assert attn_grad.shape == (num_concepts, batch_size, wrapper.num_heads, 1, 197)
     
     # Check that CLS gradients are stored for ALL 12 layers
     assert len(wrapper.cls_grads) == 12
-    # Check shape of CLS gradients: (B, D)
+    # Check shape of CLS gradients: (M, B, D)
     for cls_grad in wrapper.cls_grads:
-        assert cls_grad.shape == (batch_size, 768)
+        assert cls_grad.shape == (num_concepts, batch_size, 768)
     
     # Check that maps are stored only for layers in layer_indices
-    # Format: (H, W, B, 1) to be compatible with visualize_layerwise_maps
+    # Format: (H, W, B, M) to be compatible with visualize_layerwise_maps
     assert len(wrapper.maps) == len(layer_indices)
     for expl_map in wrapper.maps:
-        assert expl_map.shape == (14, 14, batch_size, 1)
+        assert expl_map.shape == (14, 14, batch_size, num_concepts)
     
     # Check that sim_bms are stored only for layers in layer_indices
     assert len(wrapper.sim_bms) == len(layer_indices)
     for sim_bm in wrapper.sim_bms:
-        assert sim_bm.shape == (batch_size, 1)
+        assert sim_bm.shape == (batch_size, num_concepts)
 
 
 @pytest.mark.parametrize("batch_size, layer_indices", [
@@ -263,6 +264,7 @@ def test_timm_test_wrapper_aggregate_maps(model, batch_size, layer_indices):
     assert len(wrapper.block_ins) == 12
     
     # Extract concept vector from classifier head (like in timm_cat_remote.py)
+    num_concepts = 1
     concept_vectors = model.head.weight[281].unsqueeze(0).detach()  # tabby cat class
     concept_vectors = torch.nn.functional.normalize(concept_vectors, dim=-1)
     
@@ -271,6 +273,6 @@ def test_timm_test_wrapper_aggregate_maps(model, batch_size, layer_indices):
     assert len(wrapper.maps) == len(layer_indices)
     
     maps = wrapper.aggregate_layerwise_maps()
-    # Aggregated maps should be (B, 1, H*patch_size, W*patch_size)
-    # With patch_size=16 and grid_size=14, output should be (batch_size, 1, 224, 224)
-    assert maps.shape == (batch_size, 1, 224, 224)
+    # Aggregated maps should be (B, M, H*patch_size, W*patch_size)
+    # With patch_size=16 and grid_size=14, output should be (batch_size, num_concepts, 224, 224)
+    assert maps.shape == (batch_size, num_concepts, 224, 224)
