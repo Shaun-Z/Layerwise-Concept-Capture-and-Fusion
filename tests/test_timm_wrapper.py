@@ -172,19 +172,19 @@ def test_concept_vectors_grad_wrapper(model, batch_size, layer_indices, num_conc
 
 
 # =============================================================================
-# TimmTestWrapper Tests
+# TimmCVWrapper Tests
 # =============================================================================
 
-from lccf.backends.timm.wrapper import TimmTestWrapper
+from lccf.backends.timm.wrapper import TimmCVWrapper
 
 
 @pytest.mark.parametrize("batch_size, layer_indices", [
                                 (10, [1, 3, 5]),
                                 (2, [0, 4, 7, 11]),
                                 ])
-def test_timm_test_wrapper(model, batch_size, layer_indices):
-    # Test that we can create a TimmTestWrapper
-    wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
+def test_timm_cv_wrapper(model, batch_size, layer_indices):
+    # Test that we can create a TimmCVWrapper
+    wrapper = TimmCVWrapper(model, layer_indices=layer_indices)
     device = wrapper._get_device_for_call()
     assert wrapper is not None
     assert isinstance(device, torch.device)
@@ -194,10 +194,10 @@ def test_timm_test_wrapper(model, batch_size, layer_indices):
                                 (10, [0, 11]),
                                 (5, [0, 5, 11]),
                                 ])
-def test_timm_test_wrapper_forward(model, batch_size, layer_indices):
+def test_timm_cv_wrapper_forward(model, batch_size, layer_indices):
     # Test that we can extract features from a dummy input
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
+    wrapper = TimmCVWrapper(model, layer_indices=layer_indices)
     features = wrapper.forward_features(dummy_input)
 
     assert wrapper.embed_dim == 768  # ViT-B-16 embed dim
@@ -210,10 +210,10 @@ def test_timm_test_wrapper_forward(model, batch_size, layer_indices):
                                 (10, [0, 11]),
                                 (5, [0, 5, 11]),
                                 ])
-def test_timm_test_wrapper_dot_concept_vectors(model, batch_size, layer_indices):
+def test_timm_cv_wrapper_dot_concept_vectors(model, batch_size, layer_indices):
     # Test that dot_concept_vectors works and stores the expected outputs
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
+    wrapper = TimmCVWrapper(model, layer_indices=layer_indices)
     features = wrapper.forward_features(dummy_input)
     
     # All 12 layers have block_ins
@@ -254,10 +254,10 @@ def test_timm_test_wrapper_dot_concept_vectors(model, batch_size, layer_indices)
                                 (10, [0, 11]),
                                 (3, [0, 3, 6, 9, 11]),
                                 ])
-def test_timm_test_wrapper_aggregate_maps(model, batch_size, layer_indices):
+def test_timm_cv_wrapper_aggregate_maps(model, batch_size, layer_indices):
     # Test aggregation of layerwise maps
     dummy_input = torch.randn(batch_size, 3, 224, 224)
-    wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
+    wrapper = TimmCVWrapper(model, layer_indices=layer_indices)
     
     features = wrapper.forward_features(dummy_input)
     # All 12 layers have block_ins

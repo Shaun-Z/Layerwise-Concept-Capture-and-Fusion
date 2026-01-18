@@ -1,9 +1,9 @@
 # %%
 """
-TimmTestWrapper Example Script
+TimmCVWrapper Example Script
 
-This script demonstrates how to use the TimmTestWrapper from the LCCF library.
-TimmTestWrapper propagates gradients backward from the last layer through ALL layers,
+This script demonstrates how to use the TimmCVWrapper from the LCCF library.
+TimmCVWrapper propagates gradients backward from the last layer through ALL layers,
 using each layer's CLS gradient as the concept vector for the previous (shallower) layer.
 
 Key behavior:
@@ -23,7 +23,7 @@ import timm
 from timm.data import resolve_data_config
 from timm.data.transforms_factory import create_transform
 import matplotlib.pyplot as plt
-from lccf.backends.timm.wrapper import TimmTestWrapper
+from lccf.backends.timm.wrapper import TimmCVWrapper
 from lccf.detect import wrap_timm_preprocess
 from lccf.utils import visualize, visualize_layerwise_maps
 
@@ -54,9 +54,9 @@ concept_vectors = model.head.weight[TABBY_CAT_IDX].unsqueeze(0).detach()  # [1, 
 concept_vectors = F.normalize(concept_vectors, dim=-1)
 
 # %%
-# Create TimmTestWrapper
+# Create TimmCVWrapper
 # layer_indices specifies which layers to aggregate in aggregate_layerwise_maps()
-wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
+wrapper = TimmCVWrapper(model, layer_indices=layer_indices)
 
 # %%
 device = wrapper._get_device_for_call()
