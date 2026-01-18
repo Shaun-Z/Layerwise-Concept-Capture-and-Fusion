@@ -84,27 +84,31 @@ wrapper.dot_concept_vectors(concept_vectors, power=2)
 print(f"\nNumber of attention gradients stored (all layers): {len(wrapper.attn_grads)}")
 print(f"Number of CLS gradients stored (all layers): {len(wrapper.cls_grads)}")
 print(f"Number of explanation maps stored (all layers): {len(wrapper.maps)}")
+print(f"Number of sim_bms stored (all layers): {len(wrapper.sim_bms)}")
 
 # Print shapes for first and last layers
 print(f"\nLayer 0 (shallowest):")
 print(f"  Attention gradient shape: {wrapper.attn_grads[0].shape}")
 print(f"  CLS gradient shape: {wrapper.cls_grads[0].shape}")
 print(f"  Explanation map shape: {wrapper.maps[0].shape}")
+print(f"  sim_bm shape: {wrapper.sim_bms[0].shape}")
 
 print(f"\nLayer 11 (deepest):")
 print(f"  Attention gradient shape: {wrapper.attn_grads[11].shape}")
 print(f"  CLS gradient shape: {wrapper.cls_grads[11].shape}")
 print(f"  Explanation map shape: {wrapper.maps[11].shape}")
+print(f"  sim_bm shape: {wrapper.sim_bms[11].shape}")
 
 # %%
 # For visualization, select maps for the layers we want to show
-# We can show all 12 layers or just the selected layer_indices
-selected_maps = [wrapper.maps[i].unsqueeze(-1) for i in layer_indices]  # [H, W, B, 1]
+# wrapper.maps has shape [H, W, B, 1] which is compatible with visualize_layerwise_maps
+selected_maps = [wrapper.maps[i] for i in layer_indices]
+selected_sim_bms = [wrapper.sim_bms[i] for i in layer_indices]
 
 # %%
-# Visualize layerwise maps for selected layers
+# Visualize layerwise maps for selected layers (like in timm_cat_remote.py)
 print(f"\n=== Visualizing attention maps for layers {layer_indices} ===")
-visualize_layerwise_maps(image, selected_maps, text_prompts=concept_names, mean_std=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
+visualize_layerwise_maps(image, selected_maps, sim_bms=selected_sim_bms, text_prompts=concept_names, mean_std=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
 
 # %%
 # Aggregate maps across selected layers (only layer_indices)

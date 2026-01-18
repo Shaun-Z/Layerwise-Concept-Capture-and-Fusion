@@ -367,6 +367,7 @@ class TimmTestWrapper(CopyAttrWrapper):
         self.attn_grads = []  # Store attention weight gradients
         self.cls_grads = []   # Store input CLS token gradients
         self.maps = []
+        self.sim_bms = []     # Store similarity weights for visualization
         self.pseudo_handles = []
         self.normal_handles = []
 
@@ -438,6 +439,7 @@ class TimmTestWrapper(CopyAttrWrapper):
         attn_grads_reversed = []
         cls_grads_reversed = []
         maps_reversed = []
+        sim_bms_reversed = []
         
         for enum_idx, layer_idx in sorted_indices:
             self.zero_grad()
@@ -477,6 +479,10 @@ class TimmTestWrapper(CopyAttrWrapper):
                 sim_bm = sim_bm * weight  # (B,)
             sim = sim_bm.sum()  # Sum over batch
             
+            # Store similarity weight for visualization (add concept dimension to match TimmWrapper format)
+            # TimmWrapper stores weight as (B, num_concepts), we store as (B, 1)
+            sim_bms_reversed.append(weight.unsqueeze(-1))  # (B, 1)
+            
             # Compute gradients of sim w.r.t. attn_weight and input_cls
             grads = torch.autograd.grad(
                 outputs=sim,
@@ -495,9 +501,11 @@ class TimmTestWrapper(CopyAttrWrapper):
                 attn_grad = rearrange(attn_grad, '(b h) n1 n2 -> b h n1 n2', h=self.num_heads)  # (B, num_heads, 1, N)
                 attn_grads_reversed.append(attn_grad)
                 
-                # Compute explanation map
+                # Compute explanation map with concept dimension for visualize_layerwise_maps compatibility
+                # TimmWrapper format: (H, W, B, num_concepts), we use (H, W, B, 1)
                 image_relevance = attn_grad.mean(dim=1).squeeze(-2)[..., 1:]  # (B, N-1) Exclude CLS token
                 expl_map = rearrange(image_relevance, 'b (h w) -> h w b', w=w, h=h)  # (h, w, B)
+                expl_map = expl_map.unsqueeze(-1)  # (h, w, B, 1) - add concept dimension
                 maps_reversed.append(expl_map)
             
             # Store CLS gradient and use it as concept_vector for the previous (shallower) layer
@@ -510,6 +518,7 @@ class TimmTestWrapper(CopyAttrWrapper):
         self.attn_grads = attn_grads_reversed[::-1]
         self.cls_grads = cls_grads_reversed[::-1]
         self.maps = maps_reversed[::-1]
+        self.sim_bms = sim_bms_reversed[::-1]
         
         self.switch_to_normal_mode()
 
@@ -528,10 +537,12 @@ class TimmTestWrapper(CopyAttrWrapper):
         
         # Select only the maps for the layers specified in layer_indices
         # self.maps is ordered from layer 0 to layer (num_blocks-1)
+        # Each map has shape (H, W, B, 1)
         selected_maps = [self.maps[i] for i in self._aggregate_layer_indices]
         
-        maps = torch.stack(selected_maps, dim=0)  # (num_selected_layers, h, w, B)
-        maps = maps.sum(dim=0)  # (h, w, B) - sum across selected layers
+        maps = torch.stack(selected_maps, dim=0)  # (num_selected_layers, h, w, B, 1)
+        maps = maps.sum(dim=0)  # (h, w, B, 1) - sum across selected layers
+        maps = maps.squeeze(-1)  # (h, w, B) - remove concept dimension for aggregation
         maps = rearrange(maps, 'h w b -> b h w').unsqueeze(1)  # (B, 1, h, w)
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
