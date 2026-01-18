@@ -3,11 +3,14 @@
 TimmTestWrapper Example Script
 
 This script demonstrates how to use the TimmTestWrapper from the LCCF library.
-TimmTestWrapper propagates gradients backward from the last layer, using each 
-layer's CLS gradient as the concept vector for the previous (shallower) layer.
+TimmTestWrapper propagates gradients backward from the last layer through ALL layers,
+using each layer's CLS gradient as the concept vector for the previous (shallower) layer.
 
-For the deepest layer, the concept vector comes from the model's classifier head
-(similar to how TimmWrapper uses concept vectors).
+Key behavior:
+- Gradients are computed for ALL layers (0 to 11 for ViT-B-16)
+- Each layer i uses the CLS gradient from layer i+1 as its concept vector
+- layer_indices only affects which layers are used in aggregate_layerwise_maps()
+- For the deepest layer, the concept vector comes from the model's classifier head
 """
 
 # %%
@@ -36,8 +39,9 @@ preprocess = create_transform(**config)
 preprocess = wrap_timm_preprocess(preprocess, image_size=224)
 
 # %%
-# Define which layers to capture gradients from
-# For ViT-B-16, there are 12 transformer blocks (indices 0-11)
+# Define which layers to use for aggregation
+# Note: Gradients are computed for ALL layers (0-11), but only these layers
+# will be used in aggregate_layerwise_maps()
 layer_indices = [0, 3, 6, 9, 11]
 
 # %%
@@ -51,6 +55,7 @@ concept_vectors = F.normalize(concept_vectors, dim=-1)
 
 # %%
 # Create TimmTestWrapper
+# layer_indices specifies which layers to aggregate in aggregate_layerwise_maps()
 wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
 
 # %%
@@ -62,44 +67,49 @@ url = "http://images.cocodataset.org/val2017/000000039769.jpg"
 image = preprocess(Image.open(requests.get(url, stream=True).raw)).unsqueeze(0).to(device)
 
 # %%
-# Forward pass to extract features and capture block inputs
+# Forward pass to extract features and capture block inputs for ALL layers
 features = wrapper.forward_features(image)
 print(f"Features shape: {features.shape}")
-print(f"Number of block inputs captured: {len(wrapper.block_ins)}")
+print(f"Number of block inputs captured (all layers): {len(wrapper.block_ins)}")
 
 # %%
 # Compute layerwise gradients using dot_concept_vectors
-# For the deepest layer, uses the provided concept_vectors (from classifier head)
-# For shallower layers, uses CLS gradients propagated from deeper layers
+# This computes gradients for ALL layers, propagating from layer 11 -> 10 -> ... -> 0
+# For layer 11 (deepest), uses the provided concept_vectors (from classifier head)
+# For layer i < 11, uses the CLS gradient from layer i+1
 wrapper.dot_concept_vectors(concept_vectors, power=2)
 
 # %%
-# Access the stored gradients
-print(f"\nNumber of attention gradients stored: {len(wrapper.attn_grads)}")
-print(f"Number of CLS gradients stored: {len(wrapper.cls_grads)}")
-print(f"Number of explanation maps stored: {len(wrapper.maps)}")
+# Access the stored gradients (computed for ALL 12 layers)
+print(f"\nNumber of attention gradients stored (all layers): {len(wrapper.attn_grads)}")
+print(f"Number of CLS gradients stored (all layers): {len(wrapper.cls_grads)}")
+print(f"Number of explanation maps stored (all layers): {len(wrapper.maps)}")
 
-# Print shapes
-for i, (attn_grad, cls_grad, expl_map) in enumerate(zip(wrapper.attn_grads, wrapper.cls_grads, wrapper.maps)):
-    print(f"\nLayer {layer_indices[i]}:")
-    print(f"  Attention gradient shape: {attn_grad.shape}")
-    print(f"  CLS gradient shape: {cls_grad.shape}")
-    print(f"  Explanation map shape: {expl_map.shape}")
+# Print shapes for first and last layers
+print(f"\nLayer 0 (shallowest):")
+print(f"  Attention gradient shape: {wrapper.attn_grads[0].shape}")
+print(f"  CLS gradient shape: {wrapper.cls_grads[0].shape}")
+print(f"  Explanation map shape: {wrapper.maps[0].shape}")
 
-# %%
-# Convert maps to the format expected by visualize_layerwise_maps: [H, W, B, M]
-# TimmTestWrapper maps are [H, W, B], so we add a concept dimension
-maps_with_concept_dim = [m.unsqueeze(-1) for m in wrapper.maps]  # [H, W, B, 1]
-
-# %%
-# Visualize layerwise maps (like in timm_cat_remote.py)
-print("\n=== Visualizing all layers' attention maps ===")
-visualize_layerwise_maps(image, maps_with_concept_dim, text_prompts=concept_names, mean_std=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
+print(f"\nLayer 11 (deepest):")
+print(f"  Attention gradient shape: {wrapper.attn_grads[11].shape}")
+print(f"  CLS gradient shape: {wrapper.cls_grads[11].shape}")
+print(f"  Explanation map shape: {wrapper.maps[11].shape}")
 
 # %%
-# Aggregate maps across layers
+# For visualization, select maps for the layers we want to show
+# We can show all 12 layers or just the selected layer_indices
+selected_maps = [wrapper.maps[i].unsqueeze(-1) for i in layer_indices]  # [H, W, B, 1]
+
+# %%
+# Visualize layerwise maps for selected layers
+print(f"\n=== Visualizing attention maps for layers {layer_indices} ===")
+visualize_layerwise_maps(image, selected_maps, text_prompts=concept_names, mean_std=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
+
+# %%
+# Aggregate maps across selected layers (only layer_indices)
 maps_aggregated = wrapper.aggregate_layerwise_maps()
-print(f"\nAggregated maps shape: {maps_aggregated.shape}")
+print(f"\nAggregated maps shape (from layers {layer_indices}): {maps_aggregated.shape}")
 
 # %%
 # Visualize aggregated maps (like in timm_cat_remote.py)
