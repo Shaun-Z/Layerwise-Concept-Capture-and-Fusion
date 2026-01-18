@@ -59,7 +59,7 @@ def CV_Pseudo_Attention_forward(
     # CRITICAL: Create a leaf tensor for attention weights.
     # This detaches attention_weights from its computation graph (q, k, x),
     # making it a leaf node that can accumulate gradients but NOT propagate them backward.
-    # This ensures gradients w.r.t. input CLS only flow through V, not through attention weights.
+    # This ensures gradients with respect to input CLS only flow through V, not through attention weights.
     attn_weights_leaf = attn_weights_reshaped.detach().requires_grad_(True)
     self._attn_weights = attn_weights_leaf
     
@@ -68,8 +68,9 @@ def CV_Pseudo_Attention_forward(
     # Reshape v for batched matmul: (B*num_heads, N, head_dim)
     v_reshaped = v.reshape(B * self.num_heads, N, self.head_dim)
     
-    # Compute attn @ v - gradients flow to both attn_weights_leaf and v_reshaped
-    # But since attn_weights_leaf is a leaf, gradients don't propagate further to q, k, x
+    # Compute attn @ v - gradients flow to both attn_dropped and v_reshaped
+    # Since attn_dropped comes from attn_weights_leaf (a leaf tensor),
+    # gradients don't propagate further backward to q, k, or x
     x = attn_dropped @ v_reshaped  # (B*num_heads, 1, head_dim)
     
     # Reshape back to (B, 1, C)
