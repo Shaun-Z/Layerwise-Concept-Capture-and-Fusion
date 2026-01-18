@@ -168,7 +168,7 @@ class TimmWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
+        maps = (maps - maps_min) / (maps_max - maps_min)
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
 
@@ -407,7 +407,7 @@ class TimmTestWrapper(CopyAttrWrapper):
         # attn_weights: (B*num_heads, 1, N) from Pseudo_Attention_forward
         self.attn_weight = module._attn_weights
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 2):
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 1):
         """Compute gradient-based concept activation maps using pseudo mode.
         
         Backpropagation starts from the last layer using the provided concept_vectors
@@ -418,7 +418,7 @@ class TimmTestWrapper(CopyAttrWrapper):
             concept_vectors (torch.Tensor): [num_concepts, dim] - normalized concept vectors.
                 For the last (deepest) layer, this is used as the concept vector.
                 Typically extracted from model.head.weight for a specific class.
-            power (int): Power for similarity scaling. Default: 2
+            power (int): Power for similarity scaling. Default: 1
         
         Note:
             Gradients are computed for ALL layers (0 to num_blocks-1).
@@ -553,7 +553,7 @@ class TimmTestWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
+        maps = (maps - maps_min) / (maps_max - maps_min)
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
 
