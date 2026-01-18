@@ -431,9 +431,9 @@ class TimmTestWrapper(CopyAttrWrapper):
         # _requested_hook_indices contains all layer indices (0 to num_blocks-1)
         sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
         
-        # For the first (deepest) layer, use the provided concept_vectors
-        # Average across concepts to get a single concept vector
-        concept_vector = F.normalize(concept_vectors.mean(dim=0), dim=-1)  # (D,)
+        # For the first (deepest) layer, use the provided concept_vectors directly
+        # concept_vectors shape: (num_concepts, D)
+        current_concept_vectors = concept_vectors  # (M, D)
         
         # We'll collect results in reverse order (deepest to shallowest), then reverse at the end
         # Note: attn_grads and cls_grads are stored for ALL layers
@@ -475,51 +475,55 @@ class TimmTestWrapper(CopyAttrWrapper):
             # Apply final LayerNorm
             latent_feat = F.normalize(self.norm(cls_feat), dim=-1)  # (B, D)
             
-            # Compute similarity using concept_vector
-            sim_bm = torch.einsum('b d, d -> b', latent_feat, concept_vector)  # (B,)
+            # Compute similarity with concept vectors (keeping concept dimension)
+            # current_concept_vectors: (M, D) where M is num_concepts
+            sim_bm = torch.einsum('b d, m d -> b m', latent_feat, current_concept_vectors)  # (B, M)
             if power == 0:
                 weight = torch.ones_like(sim_bm)
             else:
                 weight = torch.abs(sim_bm.clone().detach()).pow(power)
-                sim_bm = sim_bm * weight  # (B,)
-            sim = sim_bm.sum()  # Sum over batch
+                sim_bm = sim_bm * weight  # (B, M)
+            sim = sim_bm.sum(dim=0)  # (B, M) -> (M,) - sum over batch, keep concept dimension
             
             # Store similarity weight only for layers in layer_indices
             if layer_idx in aggregate_layer_set:
-                sim_bms_reversed.append(weight.unsqueeze(-1))  # (B, 1)
+                sim_bms_reversed.append(weight)  # (B, M)
             
-            # Compute gradients of sim w.r.t. attn_weight and input_cls
+            # Compute gradients of sim w.r.t. attn_weight and input_cls for each concept
+            eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
             grads = torch.autograd.grad(
                 outputs=sim,
                 inputs=[self.attn_weight, input_cls],
+                grad_outputs=eye,
                 retain_graph=True,
                 create_graph=False,
+                is_grads_batched=True,
                 allow_unused=True
             )
             
-            attn_grad = grads[0]  # (B*num_heads, 1, N)
-            cls_grad = grads[1]   # (B, D) - gradient of input CLS token
+            attn_grad = grads[0]  # (M, B*num_heads, 1, N)
+            cls_grad = grads[1]   # (M, B, D) - gradient of input CLS token for each concept
             
             # Store attention gradient (for all layers)
             if attn_grad is not None:
                 attn_grad = torch.clamp(attn_grad, min=0.)
-                attn_grad = rearrange(attn_grad, '(b h) n1 n2 -> b h n1 n2', h=self.num_heads)  # (B, num_heads, 1, N)
+                attn_grad = rearrange(attn_grad, 'm (b h) n1 n2 -> m b h n1 n2', h=self.num_heads)  # (M, B, num_heads, 1, N)
                 attn_grads_reversed.append(attn_grad)
                 
                 # Store explanation map only for layers in layer_indices
                 if layer_idx in aggregate_layer_set:
-                    # Compute explanation map with concept dimension for visualize_layerwise_maps compatibility
-                    # TimmWrapper format: (H, W, B, num_concepts), we use (H, W, B, 1)
-                    image_relevance = attn_grad.mean(dim=1).squeeze(-2)[..., 1:]  # (B, N-1) Exclude CLS token
-                    expl_map = rearrange(image_relevance, 'b (h w) -> h w b', w=w, h=h)  # (h, w, B)
-                    expl_map = expl_map.unsqueeze(-1)  # (h, w, B, 1) - add concept dimension
+                    # Compute explanation map keeping concept dimension
+                    # Format: (H, W, B, M) to match TimmWrapper
+                    image_relevance = attn_grad.mean(dim=2).squeeze(-2)[..., 1:]  # (M, B, N-1) Exclude CLS token
+                    expl_map = rearrange(image_relevance, 'm b (h w) -> h w b m', w=w, h=h)  # (h, w, B, M)
                     maps_reversed.append(expl_map)
             
-            # Store CLS gradient and use it as concept_vector for the previous (shallower) layer
+            # Store CLS gradient and use it as concept_vectors for the previous (shallower) layer
             if cls_grad is not None:
                 cls_grads_reversed.append(cls_grad)
-                # Average over batch to get single concept vector for next layer
-                concept_vector = F.normalize(cls_grad.mean(dim=0), dim=-1)  # (D,)
+                # Use the CLS gradient as concept vectors for the next layer
+                # cls_grad shape: (M, B, D), average over batch to get (M, D)
+                current_concept_vectors = F.normalize(cls_grad.mean(dim=1), dim=-1)  # (M, D)
         
         # Reverse to get forward order (shallowest to deepest)
         self.attn_grads = attn_grads_reversed[::-1]
@@ -536,17 +540,16 @@ class TimmTestWrapper(CopyAttrWrapper):
         This method sums them together and normalizes the result.
         
         Returns:
-            torch.Tensor: Aggregated attention maps of shape [B, 1, H, W]
+            torch.Tensor: Aggregated attention maps of shape [B, num_concepts, H, W]
         """
         if not self.maps:
             raise ValueError("No attention maps stored. Please run a forward pass and dot_concept_vectors first.")
         
         # self.maps already contains only maps for layers in layer_indices
-        # Each map has shape (H, W, B, 1)
-        maps = torch.stack(self.maps, dim=0)  # (num_selected_layers, h, w, B, 1)
-        maps = maps.sum(dim=0)  # (h, w, B, 1) - sum across selected layers
-        maps = maps.squeeze(-1)  # (h, w, B) - remove concept dimension for aggregation
-        maps = rearrange(maps, 'h w b -> b h w').unsqueeze(1)  # (B, 1, h, w)
+        # Each map has shape (H, W, B, M) where M is num_concepts
+        maps = torch.stack(self.maps, dim=0)  # (num_selected_layers, h, w, B, M)
+        maps = torch.einsum('l h w b m -> h w b m', maps)  # sum across layers
+        maps = rearrange(maps, 'h w b m -> b m h w')  # (B, M, h, w)
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
