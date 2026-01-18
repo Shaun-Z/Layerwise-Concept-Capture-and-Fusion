@@ -316,7 +316,7 @@ class TimmGradWrapper(CopyAttrWrapper):
         self.sim_bms = []
 
 
-class TimmTestWrapper(CopyAttrWrapper):
+class TimmCVWrapper(CopyAttrWrapper):
     """
     A timm-specific wrapper that propagates gradients from the last layer backward through
     ALL transformer blocks, using CLS token gradients as concept vectors for each layer.

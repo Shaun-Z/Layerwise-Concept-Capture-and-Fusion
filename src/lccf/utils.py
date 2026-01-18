@@ -103,7 +103,8 @@ def visualize_layerwise_maps(
         alpha: float = 0.7,
         text_prompts: Optional[List[str]] = None,
         save_dir: Optional[Path] = None,
-        title: Optional[str] = None
+        title: Optional[str] = None,
+        normalize_each_map: bool = False
     ):
     """Visualize the stored maps across all requested layers.
     Args:
@@ -115,6 +116,8 @@ def visualize_layerwise_maps(
         text_prompts: optional titles per heatmap
         save_dir: optional directory to save pngs
         title: optional title for the original image
+        normalize_each_map: if True, normalize each map independently along (H, W) dims;
+                           if False, normalize all maps together globally (default)
     """
     assert images.ndim == 4
     H, W = images.shape[-2], images.shape[-1]
@@ -130,7 +133,15 @@ def visualize_layerwise_maps(
     num_concepts = heatmaps.shape[2]
     num_layers = heatmaps.shape[0]
 
-    heatmaps = (heatmaps - heatmaps.min()) / (heatmaps.max() - heatmaps.min())
+    if normalize_each_map:
+        # Normalize each map independently along (H, W) dims
+        # heatmaps shape: [num_layers, B, M, H, W]
+        heatmaps_min = heatmaps.amin(dim=(-2, -1), keepdim=True)
+        heatmaps_max = heatmaps.amax(dim=(-2, -1), keepdim=True)
+        heatmaps = (heatmaps - heatmaps_min) / (heatmaps_max - heatmaps_min + 1e-8)
+    else:
+        # Global normalization (default behavior)
+        heatmaps = (heatmaps - heatmaps.min()) / (heatmaps.max() - heatmaps.min())
     heatmaps_np = (heatmaps.detach().cpu().numpy() * 255).astype("uint8")  
 
     fig, axes = plt.subplots(
