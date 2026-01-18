@@ -237,14 +237,14 @@ def test_timm_test_wrapper_dot_concept_vectors(model, batch_size, layer_indices)
     for cls_grad in wrapper.cls_grads:
         assert cls_grad.shape == (batch_size, 768)
     
-    # Check that maps are stored for ALL 12 layers with concept dimension
+    # Check that maps are stored only for layers in layer_indices
     # Format: (H, W, B, 1) to be compatible with visualize_layerwise_maps
-    assert len(wrapper.maps) == 12
+    assert len(wrapper.maps) == len(layer_indices)
     for expl_map in wrapper.maps:
         assert expl_map.shape == (14, 14, batch_size, 1)
     
-    # Check that sim_bms are stored for ALL 12 layers
-    assert len(wrapper.sim_bms) == 12
+    # Check that sim_bms are stored only for layers in layer_indices
+    assert len(wrapper.sim_bms) == len(layer_indices)
     for sim_bm in wrapper.sim_bms:
         assert sim_bm.shape == (batch_size, 1)
 
@@ -267,8 +267,8 @@ def test_timm_test_wrapper_aggregate_maps(model, batch_size, layer_indices):
     concept_vectors = torch.nn.functional.normalize(concept_vectors, dim=-1)
     
     wrapper.dot_concept_vectors(concept_vectors)
-    # All 12 layers have maps computed
-    assert len(wrapper.maps) == 12
+    # Maps are stored only for layers in layer_indices
+    assert len(wrapper.maps) == len(layer_indices)
     
     maps = wrapper.aggregate_layerwise_maps()
     # Aggregated maps should be (B, 1, H*patch_size, W*patch_size)

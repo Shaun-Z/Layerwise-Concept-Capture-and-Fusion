@@ -80,38 +80,36 @@ print(f"Number of block inputs captured (all layers): {len(wrapper.block_ins)}")
 wrapper.dot_concept_vectors(concept_vectors, power=2)
 
 # %%
-# Access the stored gradients (computed for ALL 12 layers)
-print(f"\nNumber of attention gradients stored (all layers): {len(wrapper.attn_grads)}")
-print(f"Number of CLS gradients stored (all layers): {len(wrapper.cls_grads)}")
-print(f"Number of explanation maps stored (all layers): {len(wrapper.maps)}")
-print(f"Number of sim_bms stored (all layers): {len(wrapper.sim_bms)}")
+# Access the stored gradients
+# attn_grads and cls_grads are computed for ALL 12 layers
+# maps and sim_bms are only stored for layers in layer_indices
+print(f"\nNumber of attention gradients stored (all 12 layers): {len(wrapper.attn_grads)}")
+print(f"Number of CLS gradients stored (all 12 layers): {len(wrapper.cls_grads)}")
+print(f"Number of explanation maps stored (only layer_indices): {len(wrapper.maps)}")
+print(f"Number of sim_bms stored (only layer_indices): {len(wrapper.sim_bms)}")
 
-# Print shapes for first and last layers
-print(f"\nLayer 0 (shallowest):")
+# Print shapes for first and last attn/cls gradients (from all layers)
+print(f"\nLayer 0 (shallowest) gradients:")
 print(f"  Attention gradient shape: {wrapper.attn_grads[0].shape}")
 print(f"  CLS gradient shape: {wrapper.cls_grads[0].shape}")
-print(f"  Explanation map shape: {wrapper.maps[0].shape}")
-print(f"  sim_bm shape: {wrapper.sim_bms[0].shape}")
 
-print(f"\nLayer 11 (deepest):")
+print(f"\nLayer 11 (deepest) gradients:")
 print(f"  Attention gradient shape: {wrapper.attn_grads[11].shape}")
 print(f"  CLS gradient shape: {wrapper.cls_grads[11].shape}")
-print(f"  Explanation map shape: {wrapper.maps[11].shape}")
-print(f"  sim_bm shape: {wrapper.sim_bms[11].shape}")
+
+# Print shapes for maps and sim_bms (only layer_indices)
+print(f"\nMaps and sim_bms (for layers {layer_indices}):")
+for i, (m, s) in enumerate(zip(wrapper.maps, wrapper.sim_bms)):
+    print(f"  Layer index {i}: map shape={m.shape}, sim_bm shape={s.shape}")
 
 # %%
-# For visualization, select maps for the layers we want to show
-# wrapper.maps has shape [H, W, B, 1] which is compatible with visualize_layerwise_maps
-selected_maps = [wrapper.maps[i] for i in layer_indices]
-selected_sim_bms = [wrapper.sim_bms[i] for i in layer_indices]
-
-# %%
-# Visualize layerwise maps for selected layers (like in timm_cat_remote.py)
+# wrapper.maps and wrapper.sim_bms already contain only data for layer_indices
+# They can be passed directly to visualize_layerwise_maps
 print(f"\n=== Visualizing attention maps for layers {layer_indices} ===")
-visualize_layerwise_maps(image, selected_maps, sim_bms=selected_sim_bms, text_prompts=concept_names, mean_std=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
+visualize_layerwise_maps(image, wrapper.maps, sim_bms=wrapper.sim_bms, text_prompts=concept_names, mean_std=((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
 
 # %%
-# Aggregate maps across selected layers (only layer_indices)
+# Aggregate maps across layer_indices
 maps_aggregated = wrapper.aggregate_layerwise_maps()
 print(f"\nAggregated maps shape (from layers {layer_indices}): {maps_aggregated.shape}")
 
