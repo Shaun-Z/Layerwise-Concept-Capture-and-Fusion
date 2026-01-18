@@ -4,9 +4,9 @@ from torchvision.transforms import Compose, Resize, InterpolationMode, Normalize
 from .types import TimmViT, TorchViT, OpenCLIPViT
 from .wrap import CopyAttrWrapper
 # Import the specific backend wrapper (if it exists)
-from .backends.openclip.wrapper import OpenCLIPWrapper, OpenCLIPGradWrapper
+from .backends.openclip.wrapper import OpenCLIPWrapper, OpenCLIPGradWrapper, OpenCLIPCVWrapper
 from .backends.timm.wrapper import TimmWrapper, TimmGradWrapper, TimmCVWrapper
-from .backends.torchvision.wrapper import TorchvisionWrapper, TorchvisionGradWrapper
+from .backends.torchvision.wrapper import TorchvisionWrapper, TorchvisionGradWrapper, TorchvisionCVWrapper
 
 def detect_and_wrap(model: Any,
                     layer_indices: Optional[List[int]] = None,
