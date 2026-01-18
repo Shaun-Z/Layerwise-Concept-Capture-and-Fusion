@@ -8,7 +8,7 @@ import types
 
 # CopyAttrWrapper is defined in lccf.wrap
 from ...wrap import CopyAttrWrapper
-from .functional import Attention_forward, Pseudo_Attention_forward
+from .functional import Attention_forward, Pseudo_Attention_forward, CV_Pseudo_Attention_forward
 
 """
 Description:
@@ -354,14 +354,19 @@ class TimmCVWrapper(CopyAttrWrapper):
         self.block_ins.append(input[0].transpose(0, 1))  # (N, B, D)
 
     def switch_to_pseudo_mode(self):
-        """Switch the Attention modules to pseudo mode that returns attention weights."""
+        """Switch the Attention modules to CV pseudo mode that returns attention weights.
+        
+        Uses CV_Pseudo_Attention_forward which stops gradient flow through attention weights,
+        allowing gradients to flow only through V path. This ensures that when computing
+        gradients w.r.t. input CLS, the gradient only comes from V, not from attention weights.
+        """
         for handle in self.normal_handles:
             handle.remove()
         self.normal_handles = []
         for idx in self._requested_hook_indices:
             block = self.blocks[idx]
-            # Override attention forward method to pseudo mode (only attend to CLS token)
-            block.attn.forward = types.MethodType(Pseudo_Attention_forward, block.attn)
+            # Override attention forward method to CV pseudo mode (stops gradient through attn)
+            block.attn.forward = types.MethodType(CV_Pseudo_Attention_forward, block.attn)
             for name, param in block.named_parameters():
                 param.requires_grad = True
             self.pseudo_handles.append(block.attn.register_forward_hook(self._save_attn_hook))
