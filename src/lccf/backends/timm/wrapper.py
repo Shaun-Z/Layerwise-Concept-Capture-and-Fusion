@@ -436,10 +436,15 @@ class TimmTestWrapper(CopyAttrWrapper):
         concept_vector = F.normalize(concept_vectors.mean(dim=0), dim=-1)  # (D,)
         
         # We'll collect results in reverse order (deepest to shallowest), then reverse at the end
+        # Note: attn_grads and cls_grads are stored for ALL layers
+        # But maps and sim_bms are only stored for layers in _aggregate_layer_indices
         attn_grads_reversed = []
         cls_grads_reversed = []
         maps_reversed = []
         sim_bms_reversed = []
+        
+        # Create a set for fast lookup of which layers to store maps/sim_bms for
+        aggregate_layer_set = set(self._aggregate_layer_indices)
         
         for enum_idx, layer_idx in sorted_indices:
             self.zero_grad()
@@ -479,9 +484,9 @@ class TimmTestWrapper(CopyAttrWrapper):
                 sim_bm = sim_bm * weight  # (B,)
             sim = sim_bm.sum()  # Sum over batch
             
-            # Store similarity weight for visualization (add concept dimension to match TimmWrapper format)
-            # TimmWrapper stores weight as (B, num_concepts), we store as (B, 1)
-            sim_bms_reversed.append(weight.unsqueeze(-1))  # (B, 1)
+            # Store similarity weight only for layers in layer_indices
+            if layer_idx in aggregate_layer_set:
+                sim_bms_reversed.append(weight.unsqueeze(-1))  # (B, 1)
             
             # Compute gradients of sim w.r.t. attn_weight and input_cls
             grads = torch.autograd.grad(
@@ -495,18 +500,20 @@ class TimmTestWrapper(CopyAttrWrapper):
             attn_grad = grads[0]  # (B*num_heads, 1, N)
             cls_grad = grads[1]   # (B, D) - gradient of input CLS token
             
-            # Store attention gradient
+            # Store attention gradient (for all layers)
             if attn_grad is not None:
                 attn_grad = torch.clamp(attn_grad, min=0.)
                 attn_grad = rearrange(attn_grad, '(b h) n1 n2 -> b h n1 n2', h=self.num_heads)  # (B, num_heads, 1, N)
                 attn_grads_reversed.append(attn_grad)
                 
-                # Compute explanation map with concept dimension for visualize_layerwise_maps compatibility
-                # TimmWrapper format: (H, W, B, num_concepts), we use (H, W, B, 1)
-                image_relevance = attn_grad.mean(dim=1).squeeze(-2)[..., 1:]  # (B, N-1) Exclude CLS token
-                expl_map = rearrange(image_relevance, 'b (h w) -> h w b', w=w, h=h)  # (h, w, B)
-                expl_map = expl_map.unsqueeze(-1)  # (h, w, B, 1) - add concept dimension
-                maps_reversed.append(expl_map)
+                # Store explanation map only for layers in layer_indices
+                if layer_idx in aggregate_layer_set:
+                    # Compute explanation map with concept dimension for visualize_layerwise_maps compatibility
+                    # TimmWrapper format: (H, W, B, num_concepts), we use (H, W, B, 1)
+                    image_relevance = attn_grad.mean(dim=1).squeeze(-2)[..., 1:]  # (B, N-1) Exclude CLS token
+                    expl_map = rearrange(image_relevance, 'b (h w) -> h w b', w=w, h=h)  # (h, w, B)
+                    expl_map = expl_map.unsqueeze(-1)  # (h, w, B, 1) - add concept dimension
+                    maps_reversed.append(expl_map)
             
             # Store CLS gradient and use it as concept_vector for the previous (shallower) layer
             if cls_grad is not None:
@@ -525,9 +532,8 @@ class TimmTestWrapper(CopyAttrWrapper):
     def aggregate_layerwise_maps(self):
         """Aggregate the stored maps across the layers specified in layer_indices.
         
-        Only the layers specified in __init__'s layer_indices parameter will be
-        included in the aggregation. All layers have their gradients computed,
-        but only the selected layers contribute to the final aggregated map.
+        The maps are already filtered to only contain layers from layer_indices.
+        This method sums them together and normalizes the result.
         
         Returns:
             torch.Tensor: Aggregated attention maps of shape [B, 1, H, W]
@@ -535,12 +541,9 @@ class TimmTestWrapper(CopyAttrWrapper):
         if not self.maps:
             raise ValueError("No attention maps stored. Please run a forward pass and dot_concept_vectors first.")
         
-        # Select only the maps for the layers specified in layer_indices
-        # self.maps is ordered from layer 0 to layer (num_blocks-1)
+        # self.maps already contains only maps for layers in layer_indices
         # Each map has shape (H, W, B, 1)
-        selected_maps = [self.maps[i] for i in self._aggregate_layer_indices]
-        
-        maps = torch.stack(selected_maps, dim=0)  # (num_selected_layers, h, w, B, 1)
+        maps = torch.stack(self.maps, dim=0)  # (num_selected_layers, h, w, B, 1)
         maps = maps.sum(dim=0)  # (h, w, B, 1) - sum across selected layers
         maps = maps.squeeze(-1)  # (h, w, B) - remove concept dimension for aggregation
         maps = rearrange(maps, 'h w b -> b h w').unsqueeze(1)  # (B, 1, h, w)
