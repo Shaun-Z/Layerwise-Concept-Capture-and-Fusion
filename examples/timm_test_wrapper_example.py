@@ -6,8 +6,8 @@ This script demonstrates how to use the TimmTestWrapper from the LCCF library.
 TimmTestWrapper propagates gradients backward from the last layer, using each 
 layer's CLS gradient as the concept vector for the previous (shallower) layer.
 
-Unlike TimmWrapper which requires user-defined concept vectors, TimmTestWrapper
-automatically derives concept vectors from the gradient flow between layers.
+For the deepest layer, the concept vector comes from the model's classifier head
+(similar to how TimmWrapper uses concept vectors).
 """
 
 # %%
@@ -40,6 +40,13 @@ preprocess = wrap_timm_preprocess(preprocess, image_size=224)
 layer_indices = [0, 3, 6, 9, 11]
 
 # %%
+# Extract concept vector from classifier head (same approach as timm_cat_remote.py)
+# ImageNet class 281: tabby cat
+TABBY_CAT_IDX = 281
+concept_vectors = model.head.weight[TABBY_CAT_IDX].unsqueeze(0).detach()  # [1, 768]
+concept_vectors = F.normalize(concept_vectors, dim=-1)
+
+# %%
 # Create TimmTestWrapper
 wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
 
@@ -58,10 +65,10 @@ print(f"Features shape: {features.shape}")
 print(f"Number of block inputs captured: {len(wrapper.block_ins)}")
 
 # %%
-# Compute layerwise gradients
-# This propagates gradients from the deepest layer backward,
-# using CLS gradients as concept vectors for each layer
-wrapper.compute_layerwise_gradients(power=2)
+# Compute layerwise gradients using dot_concept_vectors
+# For the deepest layer, uses the provided concept_vectors (from classifier head)
+# For shallower layers, uses CLS gradients propagated from deeper layers
+wrapper.dot_concept_vectors(concept_vectors, power=2)
 
 # %%
 # Access the stored gradients

@@ -209,15 +209,19 @@ def test_timm_test_wrapper_forward(model, batch_size, layer_indices):
                                 (10, [0, 11]),
                                 (5, [0, 5, 11]),
                                 ])
-def test_timm_test_wrapper_compute_layerwise_gradients(model, batch_size, layer_indices):
-    # Test that compute_layerwise_gradients works and stores the expected outputs
+def test_timm_test_wrapper_dot_concept_vectors(model, batch_size, layer_indices):
+    # Test that dot_concept_vectors works and stores the expected outputs
     dummy_input = torch.randn(batch_size, 3, 224, 224)
     wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
     features = wrapper.forward_features(dummy_input)
     
     assert len(wrapper.block_ins) == len(layer_indices)
     
-    wrapper.compute_layerwise_gradients()
+    # Extract concept vector from classifier head (like in timm_cat_remote.py)
+    concept_vectors = model.head.weight[281].unsqueeze(0).detach()  # tabby cat class
+    concept_vectors = torch.nn.functional.normalize(concept_vectors, dim=-1)
+    
+    wrapper.dot_concept_vectors(concept_vectors)
     
     # Check that attention gradients are stored for each layer
     assert len(wrapper.attn_grads) == len(layer_indices)
@@ -249,7 +253,11 @@ def test_timm_test_wrapper_aggregate_maps(model, batch_size, layer_indices):
     features = wrapper.forward_features(dummy_input)
     assert len(wrapper.block_ins) == len(layer_indices)
     
-    wrapper.compute_layerwise_gradients()
+    # Extract concept vector from classifier head (like in timm_cat_remote.py)
+    concept_vectors = model.head.weight[281].unsqueeze(0).detach()  # tabby cat class
+    concept_vectors = torch.nn.functional.normalize(concept_vectors, dim=-1)
+    
+    wrapper.dot_concept_vectors(concept_vectors)
     assert len(wrapper.maps) == len(layer_indices)
     
     maps = wrapper.aggregate_layerwise_maps()
