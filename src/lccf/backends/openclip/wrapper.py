@@ -424,9 +424,6 @@ class OpenCLIPCVWrapper(CopyAttrWrapper):
         # Process ALL layers in reverse order (from deepest to shallowest)
         sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
         
-        # For the first (deepest) layer, use the provided concept_vectors directly (in latent space)
-        current_concept_vectors = concept_vectors  # (M, D) where D is latent dim (e.g., 512)
-        
         # We'll collect results in reverse order (deepest to shallowest), then reverse at the end
         attn_grads_reversed = []
         cls_grads_reversed = []
@@ -436,13 +433,87 @@ class OpenCLIPCVWrapper(CopyAttrWrapper):
         # Create a set for fast lookup of which layers to store maps/sim_bms for
         aggregate_layer_set = set(self._aggregate_layer_indices)
         
-        # Get the deepest layer index
-        deepest_layer_idx = sorted_indices[0][1] if sorted_indices else -1
+        # ========== Step 1: Process the deepest layer first (in latent space) ==========
+        # This computes the initial CLS gradient that will be used as concept_vectors for the loop
+        deepest_enum_idx, deepest_layer_idx = sorted_indices[0]
         
-        for enum_idx, layer_idx in sorted_indices:
+        self.visual.zero_grad()
+        block = self.visual.transformer.resblocks[deepest_layer_idx]
+        data_in = self.block_ins[deepest_enum_idx]  # (N, B, D) in hidden space (768)
+        
+        # Get CLS token from input - requires grad for computing cls_grad
+        input_cls = data_in[0, :, :].clone()  # (B, D) in hidden space (768)
+        input_cls.requires_grad_(True)
+        
+        # Create input with the grad-enabled CLS token
+        data_in_with_grad = data_in.clone()
+        data_in_with_grad[0, :, :] = input_cls
+        
+        # Run through the block - returns (B, D) in pseudo mode
+        cls_feat = block(data_in_with_grad)  # (B, D) in hidden space (768)
+        
+        # Project to latent space (like OpenCLIPWrapper)
+        latent_feat = self.visual.ln_post(cls_feat) @ self.visual.proj  # (B, latent_dim=512)
+        latent_feat_normalized = F.normalize(latent_feat, dim=-1)  # (B, latent_dim)
+        latent_feat_normalized.retain_grad()
+        
+        # Compute similarity with concept vectors (in latent space)
+        sim_bm = torch.einsum('b d, m d -> b m', latent_feat_normalized, concept_vectors)  # (B, M)
+        if power == 0:
+            weight = torch.ones_like(sim_bm)
+        else:
+            weight = torch.abs(sim_bm.clone().detach()).pow(power)
+            sim_bm = sim_bm * weight  # (B, M)
+        sim = sim_bm.sum(dim=0)  # (B, M) -> (M,)
+        
+        # Store similarity weight for deepest layer if in layer_indices
+        if deepest_layer_idx in aggregate_layer_set:
+            sim_bms_reversed.append(weight)  # (B, M)
+        
+        # Compute gradients of sim w.r.t. attn_weight and input_cls for each concept
+        eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
+        grads = torch.autograd.grad(
+            outputs=sim,
+            inputs=[self.attn_weight, input_cls],
+            grad_outputs=eye,
+            retain_graph=True,
+            create_graph=False,
+            is_grads_batched=True,
+            allow_unused=True
+        )
+        
+        attn_grad = grads[0]  # (M, B*num_heads, 1, N)
+        cls_grad = grads[1]   # (M, B, D) - gradient of input CLS (in hidden space 768)
+        
+        # Store attention gradient for deepest layer
+        if attn_grad is not None:
+            attn_grad = torch.clamp(attn_grad, min=0.)
+            attn_grad = rearrange(attn_grad, 'm (b h) n1 n2 -> m b h n1 n2', h=self.num_heads)
+            attn_grads_reversed.append(attn_grad)
+            
+            # Store explanation map for deepest layer if in layer_indices
+            if deepest_layer_idx in aggregate_layer_set:
+                image_relevance = attn_grad.mean(dim=2).squeeze(-2)[..., 1:]  # (M, B, N-1)
+                expl_map = rearrange(image_relevance, 'm b (h w) -> h w b m', w=w, h=h)
+                maps_reversed.append(expl_map)
+        
+        # Store CLS gradient and use it as concept_vectors for remaining layers
+        if cls_grad is not None:
+            cls_grads_reversed.append(cls_grad)
+            # Use the CLS gradient (in hidden space 768-dim) as concept vectors for remaining layers
+            current_concept_vectors = F.normalize(cls_grad.mean(dim=1), dim=-1)  # (M, D=768)
+        else:
+            current_concept_vectors = None
+        
+        # ========== Step 2: Process remaining layers uniformly (in hidden space) ==========
+        # All layers use CLS directly (768-dim) dotted with the gradient from the previous iteration
+        for enum_idx, layer_idx in sorted_indices[1:]:  # Skip the deepest layer (already processed)
+            if current_concept_vectors is None:
+                break
+                
             self.visual.zero_grad()
             block = self.visual.transformer.resblocks[layer_idx]
-            data_in = self.block_ins[enum_idx]  # (N, B, D) in hidden space (e.g., 768)
+            data_in = self.block_ins[enum_idx]  # (N, B, D) in hidden space (768)
             
             # Get CLS token from input - requires grad for computing cls_grad
             input_cls = data_in[0, :, :].clone()  # (B, D) in hidden space (768)
@@ -454,24 +525,10 @@ class OpenCLIPCVWrapper(CopyAttrWrapper):
             
             # Run through the block - returns (B, D) in pseudo mode
             cls_feat = block(data_in_with_grad)  # (B, D) in hidden space (768)
+            cls_feat.retain_grad()
             
-            # For the deepest layer: project to latent space and dot with text embeddings
-            # For other layers: dot CLS directly with the gradient from the next layer (in hidden space)
-            is_deepest_layer = (layer_idx == deepest_layer_idx)
-            
-            if is_deepest_layer:
-                # Project to latent space (like OpenCLIPWrapper)
-                latent_feat = self.visual.ln_post(cls_feat) @ self.visual.proj  # (B, latent_dim=512)
-                latent_feat_normalized = F.normalize(latent_feat, dim=-1)  # (B, latent_dim)
-                feat_for_sim = latent_feat_normalized
-            else:
-                # Use CLS directly in hidden space (768-dim)
-                feat_for_sim = cls_feat  # (B, D=768)
-            
-            feat_for_sim.retain_grad()
-            
-            # Compute similarity with concept vectors (keeping concept dimension)
-            sim_bm = torch.einsum('b d, m d -> b m', feat_for_sim, current_concept_vectors)  # (B, M)
+            # Compute similarity with concept vectors (in hidden space)
+            sim_bm = torch.einsum('b d, m d -> b m', cls_feat, current_concept_vectors)  # (B, M)
             if power == 0:
                 weight = torch.ones_like(sim_bm)
             else:
@@ -484,7 +541,6 @@ class OpenCLIPCVWrapper(CopyAttrWrapper):
                 sim_bms_reversed.append(weight)  # (B, M)
             
             # Compute gradients of sim w.r.t. attn_weight and input_cls for each concept
-            # We use input_cls (hidden space) for the gradient to pass to the next layer
             eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
             grads = torch.autograd.grad(
                 outputs=sim,
@@ -497,9 +553,9 @@ class OpenCLIPCVWrapper(CopyAttrWrapper):
             )
             
             attn_grad = grads[0]  # (M, B*num_heads, 1, N)
-            cls_grad = grads[1]   # (M, B, D) - gradient of input CLS for each concept (in hidden space)
+            cls_grad = grads[1]   # (M, B, D) - gradient of input CLS (in hidden space)
             
-            # Store attention gradient (for all layers)
+            # Store attention gradient
             if attn_grad is not None:
                 attn_grad = torch.clamp(attn_grad, min=0.)
                 attn_grad = rearrange(attn_grad, 'm (b h) n1 n2 -> m b h n1 n2', h=self.num_heads)
@@ -511,11 +567,10 @@ class OpenCLIPCVWrapper(CopyAttrWrapper):
                     expl_map = rearrange(image_relevance, 'm b (h w) -> h w b m', w=w, h=h)
                     maps_reversed.append(expl_map)
             
-            # Store CLS gradient and use it as concept_vectors for the previous layer
+            # Store CLS gradient and use it as concept_vectors for the next layer
             if cls_grad is not None:
                 cls_grads_reversed.append(cls_grad)
-                # Use the CLS gradient as concept vectors for the next layer
-                # In hidden space (768-dim), normalize for the next layer
+                # Use the CLS gradient as concept vectors for the next layer (in hidden space)
                 current_concept_vectors = F.normalize(cls_grad.mean(dim=1), dim=-1)  # (M, D=768)
         
         # Reverse to get forward order (shallowest to deepest)
