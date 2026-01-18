@@ -202,7 +202,8 @@ def test_timm_test_wrapper_forward(model, batch_size, layer_indices):
 
     assert wrapper.embed_dim == 768  # ViT-B-16 embed dim
     assert features.shape == (batch_size, 197, 768)  # (B, N, D) with CLS token
-    assert len(wrapper.block_ins) == len(layer_indices)
+    # All 12 layers have block_ins (ViT-B-16 has 12 blocks)
+    assert len(wrapper.block_ins) == 12
 
 
 @pytest.mark.parametrize("batch_size, layer_indices", [
@@ -215,7 +216,8 @@ def test_timm_test_wrapper_dot_concept_vectors(model, batch_size, layer_indices)
     wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
     features = wrapper.forward_features(dummy_input)
     
-    assert len(wrapper.block_ins) == len(layer_indices)
+    # All 12 layers have block_ins
+    assert len(wrapper.block_ins) == 12
     
     # Extract concept vector from classifier head (like in timm_cat_remote.py)
     concept_vectors = model.head.weight[281].unsqueeze(0).detach()  # tabby cat class
@@ -223,20 +225,20 @@ def test_timm_test_wrapper_dot_concept_vectors(model, batch_size, layer_indices)
     
     wrapper.dot_concept_vectors(concept_vectors)
     
-    # Check that attention gradients are stored for each layer
-    assert len(wrapper.attn_grads) == len(layer_indices)
+    # Check that attention gradients are stored for ALL 12 layers
+    assert len(wrapper.attn_grads) == 12
     # Check shape of attention gradients: (B, num_heads, 1, N)
     for attn_grad in wrapper.attn_grads:
         assert attn_grad.shape == (batch_size, wrapper.num_heads, 1, 197)
     
-    # Check that CLS gradients are stored for each layer
-    assert len(wrapper.cls_grads) == len(layer_indices)
+    # Check that CLS gradients are stored for ALL 12 layers
+    assert len(wrapper.cls_grads) == 12
     # Check shape of CLS gradients: (B, D)
     for cls_grad in wrapper.cls_grads:
         assert cls_grad.shape == (batch_size, 768)
     
-    # Check that maps are stored for each layer
-    assert len(wrapper.maps) == len(layer_indices)
+    # Check that maps are stored for ALL 12 layers
+    assert len(wrapper.maps) == 12
     for expl_map in wrapper.maps:
         assert expl_map.shape == (14, 14, batch_size)
 
@@ -251,14 +253,16 @@ def test_timm_test_wrapper_aggregate_maps(model, batch_size, layer_indices):
     wrapper = TimmTestWrapper(model, layer_indices=layer_indices)
     
     features = wrapper.forward_features(dummy_input)
-    assert len(wrapper.block_ins) == len(layer_indices)
+    # All 12 layers have block_ins
+    assert len(wrapper.block_ins) == 12
     
     # Extract concept vector from classifier head (like in timm_cat_remote.py)
     concept_vectors = model.head.weight[281].unsqueeze(0).detach()  # tabby cat class
     concept_vectors = torch.nn.functional.normalize(concept_vectors, dim=-1)
     
     wrapper.dot_concept_vectors(concept_vectors)
-    assert len(wrapper.maps) == len(layer_indices)
+    # All 12 layers have maps computed
+    assert len(wrapper.maps) == 12
     
     maps = wrapper.aggregate_layerwise_maps()
     # Aggregated maps should be (B, 1, H*patch_size, W*patch_size)

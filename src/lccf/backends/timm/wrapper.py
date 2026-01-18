@@ -319,25 +319,41 @@ class TimmGradWrapper(CopyAttrWrapper):
 class TimmTestWrapper(CopyAttrWrapper):
     """
     A timm-specific wrapper that propagates gradients from the last layer backward through
-    transformer blocks, using CLS token gradients as concept vectors for each layer.
+    ALL transformer blocks, using CLS token gradients as concept vectors for each layer.
     
     Key behavior:
     - Backpropagation starts from the last layer's output
-    - For mid layers, the gradient of the CLS comes from deeper layers
+    - For mid layers, the gradient of the CLS comes from layer i+1
     - During each block's backpropagation, stores:
       1) attention_weight's grad
       2) input CLS token's grad (serves as concept vector for the previous block)
     - The start of each block's backpropagation is concept_vector * CLS
+    - Gradients are computed for ALL layers (0 to num_blocks-1)
+    - layer_indices is only used for aggregation (selecting which layers' maps to sum)
     
-    This wrapper processes layers in reverse order (from deepest to shallowest).
+    This wrapper processes all layers in reverse order (from deepest to shallowest).
     """
     def __init__(self, model: Any, layer_indices: Optional[List[int]] = None, include_private: bool = False):
+        # Get the number of blocks before calling super().__init__
+        num_blocks = len(model.blocks)
+        
+        # Store layer_indices for aggregation, but use ALL layers for hook registration
+        all_layer_indices = list(range(num_blocks))
+        
         # The copying behavior is done by the parent class CopyAttrWrapper
-        super().__init__(model, layer_indices=layer_indices, include_private=include_private)
+        # Pass ALL layer indices for hook registration
+        super().__init__(model, layer_indices=all_layer_indices, include_private=include_private)
 
         # Store patch info for later use
         self._patch_size = model.patch_embed.proj.kernel_size[0]
         self.num_heads = model.blocks[0].attn.num_heads
+        self._num_blocks = num_blocks
+        
+        # Store the user's requested layer_indices for aggregation only
+        if layer_indices is None:
+            self._aggregate_layer_indices = all_layer_indices
+        else:
+            self._aggregate_layer_indices = list(layer_indices)
 
         self.reset()
         
@@ -394,19 +410,24 @@ class TimmTestWrapper(CopyAttrWrapper):
         """Compute gradient-based concept activation maps using pseudo mode.
         
         Backpropagation starts from the last layer using the provided concept_vectors
-        (typically from the classifier head), then uses the CLS gradient from deeper 
-        layers as the concept vector for shallower layers.
+        (typically from the classifier head), then propagates through ALL layers.
+        Each layer i uses the CLS gradient from layer i+1 as its concept vector.
         
         Args:
             concept_vectors (torch.Tensor): [num_concepts, dim] - normalized concept vectors.
                 For the last (deepest) layer, this is used as the concept vector.
                 Typically extracted from model.head.weight for a specific class.
             power (int): Power for similarity scaling. Default: 2
+        
+        Note:
+            Gradients are computed for ALL layers (0 to num_blocks-1).
+            The layer_indices parameter in __init__ only affects aggregation.
         """
         w = h = int(math.sqrt(self.block_ins[0].shape[0] - 1))  # Exclude CLS token
         self.switch_to_pseudo_mode()
         
-        # Process layers in reverse order (from deepest to shallowest)
+        # Process ALL layers in reverse order (from deepest to shallowest)
+        # _requested_hook_indices contains all layer indices (0 to num_blocks-1)
         sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
         
         # For the first (deepest) layer, use the provided concept_vectors
@@ -493,15 +514,24 @@ class TimmTestWrapper(CopyAttrWrapper):
         self.switch_to_normal_mode()
 
     def aggregate_layerwise_maps(self):
-        """Aggregate the stored maps across all requested layers.
+        """Aggregate the stored maps across the layers specified in layer_indices.
+        
+        Only the layers specified in __init__'s layer_indices parameter will be
+        included in the aggregation. All layers have their gradients computed,
+        but only the selected layers contribute to the final aggregated map.
         
         Returns:
             torch.Tensor: Aggregated attention maps of shape [B, 1, H, W]
         """
         if not self.maps:
-            raise ValueError("No attention maps stored. Please run a forward pass and compute_layerwise_gradients first.")
-        maps = torch.stack(self.maps, dim=0)  # (num_layers, h, w, B)
-        maps = maps.sum(dim=0)  # (h, w, B) - sum across layers
+            raise ValueError("No attention maps stored. Please run a forward pass and dot_concept_vectors first.")
+        
+        # Select only the maps for the layers specified in layer_indices
+        # self.maps is ordered from layer 0 to layer (num_blocks-1)
+        selected_maps = [self.maps[i] for i in self._aggregate_layer_indices]
+        
+        maps = torch.stack(selected_maps, dim=0)  # (num_selected_layers, h, w, B)
+        maps = maps.sum(dim=0)  # (h, w, B) - sum across selected layers
         maps = rearrange(maps, 'h w b -> b h w').unsqueeze(1)  # (B, 1, h, w)
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
