@@ -67,7 +67,7 @@ print(f"Number of block inputs captured (all layers): {len(wrapper.block_ins)}")
 # This computes gradients for ALL layers, propagating from layer 11 -> 10 -> ... -> 0
 # For layer 11 (deepest), uses the provided concept_vectors (from text embeddings)
 # For layer i < 11, uses the CLS gradient from layer i+1
-wrapper.dot_concept_vectors(text_embeddings, power=0)
+wrapper.dot_concept_vectors(text_embeddings, power=1)
 
 # %%
 # Access the stored gradients
