@@ -409,7 +409,6 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
         
         # Process ALL layers in reverse order (from deepest to shallowest)
         sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
-        deepest_layer_idx = sorted_indices[0][1]
         
         # We'll collect results in reverse order (deepest to shallowest), then reverse at the end
         attn_grads_reversed = []
