@@ -291,6 +291,251 @@ class TimmWrapper(CopyAttrWrapper):
         self.sim_bms = []
 
 
+class TimmFCVWrapper(CopyAttrWrapper):
+    """
+    A timm-specific wrapper that propagates gradients from the last layer backward through
+    ALL transformer blocks, using ALL tokens' gradients as concept vectors for each layer.
+    
+    Key behavior:
+    - All blocks do backpropagation, layer_indices is only for choosing visualized layers
+    - For the deepest layer, concept_vectors shape is (M, D)
+    - For mid layers, concept_vectors shape is (B, M, N, D) - full token gradients
+    - During each block's backpropagation, stores:
+      1) attention_weight's grad
+      2) input tokens' grad (B, M, N, D) (serves as concept vectors for the previous block)
+    - The start of i-th block's backpropagation:
+      feat = block_output  # (bsz, N, D)
+      latent_feat = F.normalize(self.norm(feat), dim=-1)  # (bsz, N, D)
+      sim_bm = torch.einsum('b n d, b m n d -> b m', latent_feat, concept_vectors)
+    
+    This wrapper processes all layers in reverse order (from deepest to shallowest).
+    """
+    def __init__(self, model: Any, layer_indices: Optional[List[int]] = None, include_private: bool = False):
+        # Get the number of blocks before calling super().__init__
+        num_blocks = len(model.blocks)
+        
+        # Store layer_indices for aggregation, but use ALL layers for hook registration
+        all_layer_indices = list(range(num_blocks))
+        
+        # The copying behavior is done by the parent class CopyAttrWrapper
+        # Pass ALL layer indices for hook registration
+        super().__init__(model, layer_indices=all_layer_indices, include_private=include_private)
+
+        # Store patch info for later use
+        self._patch_size = model.patch_embed.proj.kernel_size[0]
+        self.num_heads = model.blocks[0].attn.num_heads
+        self._num_blocks = num_blocks
+
+        self.pseudo_handles = []
+        self.normal_handles = []
+        
+        # Store the user's requested layer_indices for aggregation only
+        if layer_indices is None:
+            self._aggregate_layer_indices = all_layer_indices
+        else:
+            self._aggregate_layer_indices = list(layer_indices)
+
+        self.reset()
+        
+        # Register hooks in normal mode to capture block inputs and outputs
+        self.switch_to_normal_mode()
+
+    def reset(self):
+        """Reset the stored results and maps."""
+        self.block_ins = []
+        self.block_outs = []
+        self.attn_weight = None
+        self.attn_grads = []     # Store attention weight gradients
+        self.token_grads = []    # Store input tokens' gradients (B, M, N, D)
+        self.maps = []
+        self.sim_bms = []        # Store similarity weights for visualization
+
+    def _save_block_input(self, module, input, output):
+        # input is a tuple, input[0] is the actual input tensor
+        # timm block input: (B, N, D)
+        self.block_ins.append(input[0])  # (B, N, D)
+        
+    def _save_block_output(self, module, input, output):
+        # timm block output: (B, N, D)
+        self.block_outs.append(output)  # (B, N, D)
+
+    def switch_to_pseudo_mode(self):
+        """Switch the Attention modules to standard mode that returns attention weights.
+        
+        Unlike CVWrapper which only attends to CLS token, FCVWrapper uses full attention
+        to compute gradients for all tokens.
+        """
+        for handle in self.normal_handles:
+            handle.remove()
+        self.normal_handles = []
+        for idx in self._requested_hook_indices:
+            block = self.blocks[idx]
+            # Use Attention_forward which returns all attention weights
+            block.attn.forward = types.MethodType(Attention_forward, block.attn)
+            for name, param in block.named_parameters():
+                param.requires_grad = True
+            self.pseudo_handles.append(block.attn.register_forward_hook(self._save_attn_hook))
+
+    def switch_to_normal_mode(self):
+        """Switch back to the normal Attention modules and register input/output hooks."""
+        for handle in self.pseudo_handles:
+            handle.remove()
+        self.pseudo_handles = []
+        for idx in self._requested_hook_indices:
+            block = self.blocks[idx]
+            self.normal_handles.append(block.register_forward_hook(self._save_block_input))
+            self.normal_handles.append(block.register_forward_hook(self._save_block_output))
+            # Restore attention forward method
+            block.attn.forward = types.MethodType(Attention_forward, block.attn)
+            for name, param in block.named_parameters():
+                param.requires_grad = False
+
+    def _save_attn_hook(self, module, input, output):
+        # attn_weights: (B, num_heads, N, N) from Attention_forward
+        self.attn_weight = module._attn_weights
+
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 1):
+        """Compute gradient-based concept activation maps using full token backpropagation.
+        
+        Backpropagation starts from the last layer using the provided concept_vectors
+        (shape M, D), then propagates through ALL layers. Each layer i uses the full
+        token gradients (B, M, N, D) from layer i+1 as its concept vectors.
+        
+        Args:
+            concept_vectors (torch.Tensor): [num_concepts, dim] - normalized concept vectors.
+                For the last (deepest) layer, this is used as the concept vector.
+                Typically extracted from model.head.weight for a specific class.
+            power (int): Power for similarity scaling. Default: 1
+        
+        Note:
+            Gradients are computed for ALL layers (0 to num_blocks-1).
+            The layer_indices parameter in __init__ only affects aggregation.
+        """
+        w = h = int(math.sqrt(self.block_ins[0].shape[1] - 1))  # Exclude CLS token, (B, N, D)
+        self.switch_to_pseudo_mode()
+        
+        # Process ALL layers in reverse order (from deepest to shallowest)
+        sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
+        deepest_layer_idx = sorted_indices[0][1]
+        
+        # For the first (deepest) layer, use the provided concept_vectors directly
+        # concept_vectors shape: (M, D)
+        current_concept_vectors = concept_vectors  # (M, D) for deepest layer
+        is_deepest = True
+        
+        # We'll collect results in reverse order (deepest to shallowest), then reverse at the end
+        attn_grads_reversed = []
+        token_grads_reversed = []
+        maps_reversed = []
+        sim_bms_reversed = []
+        
+        # Create a set for fast lookup of which layers to store maps/sim_bms for
+        aggregate_layer_set = set(self._aggregate_layer_indices)
+        
+        for enum_idx, layer_idx in sorted_indices:
+            self.zero_grad()
+            block = self.blocks[layer_idx]
+            data_in = self.block_ins[enum_idx]  # (B, N, D)
+            
+            # Get input tokens - requires grad for computing token gradients
+            input_tokens = data_in.clone()
+            input_tokens.requires_grad_(True)
+            
+            # Run through the block
+            # timm block: x = x + attn(norm1(x)), x = x + mlp(norm2(x))
+            x_norm = block.norm1(input_tokens)
+            attn_out = block.attn(x_norm)  # (B, N, D)
+            x = input_tokens + attn_out  # (B, N, D)
+            x_norm2 = block.norm2(x)
+            mlp_out = block.mlp(x_norm2)
+            block_output = x + mlp_out  # (B, N, D)
+            
+            # Apply final LayerNorm
+            latent_feat = F.normalize(self.norm(block_output), dim=-1)  # (B, N, D)
+            
+            if is_deepest:
+                # For deepest layer: concept_vectors is (M, D)
+                sim_bm = torch.einsum('b n d, m d -> b m', latent_feat, current_concept_vectors)  # (B, M)
+                is_deepest = False
+            else:
+                # For other layers: concept_vectors is (B, M, N, D)
+                sim_bm = torch.einsum('b n d, b m n d -> b m', latent_feat, current_concept_vectors)  # (B, M)
+            
+            if power == 0:
+                weight = torch.ones_like(sim_bm)
+            else:
+                weight = torch.abs(sim_bm.clone().detach()).pow(power)
+                sim_bm = sim_bm * weight  # (B, M)
+            sim = sim_bm.sum(dim=0)  # (B, M) -> (M,)
+            
+            # Store similarity weight only for layers in layer_indices
+            if layer_idx in aggregate_layer_set:
+                sim_bms_reversed.append(weight)  # (B, M)
+            
+            # Compute gradients of sim w.r.t. attn_weight and input_tokens for each concept
+            eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
+            grads = torch.autograd.grad(
+                outputs=sim,
+                inputs=[self.attn_weight, input_tokens],
+                grad_outputs=eye,
+                retain_graph=True,
+                create_graph=False,
+                is_grads_batched=True,
+                allow_unused=True
+            )
+            
+            attn_grad = grads[0]  # (M, B, num_heads, N, N)
+            token_grad = grads[1]  # (M, B, N, D) - gradient of all input tokens for each concept
+            
+            # Store attention gradient (for all layers)
+            if attn_grad is not None:
+                attn_grad = torch.clamp(attn_grad, min=0.)
+                attn_grads_reversed.append(attn_grad)
+                
+                # Store explanation map only for layers in layer_indices
+                if layer_idx in aggregate_layer_set:
+                    # Compute explanation map: average over heads and query positions, exclude CLS
+                    # attn_grad: (M, B, num_heads, N, N)
+                    image_relevance = attn_grad.mean(dim=2).mean(dim=-2)[..., 1:]  # (M, B, N-1)
+                    expl_map = rearrange(image_relevance, 'm b (h w) -> h w b m', w=w, h=h)
+                    maps_reversed.append(expl_map)
+            
+            # Store token gradients and use as concept_vectors for the previous (shallower) layer
+            if token_grad is not None:
+                # token_grad shape: (M, B, N, D), transpose to (B, M, N, D)
+                token_grad_transposed = token_grad.permute(1, 0, 2, 3)  # (B, M, N, D)
+                token_grads_reversed.append(token_grad_transposed)
+                # Use normalized token gradients as concept vectors for the next layer
+                current_concept_vectors = F.normalize(token_grad_transposed, dim=-1)  # (B, M, N, D)
+        
+        # Reverse to get forward order (shallowest to deepest)
+        self.attn_grads = attn_grads_reversed[::-1]
+        self.token_grads = token_grads_reversed[::-1]
+        self.maps = maps_reversed[::-1]
+        self.sim_bms = sim_bms_reversed[::-1]
+        
+        self.switch_to_normal_mode()
+
+    def aggregate_layerwise_maps(self):
+        """Aggregate the stored maps across the layers specified in layer_indices.
+        
+        Returns:
+            torch.Tensor: Aggregated attention maps of shape [B, num_concepts, H, W]
+        """
+        if not self.maps:
+            raise ValueError("No attention maps stored. Please run a forward pass and dot_concept_vectors first.")
+        
+        maps = torch.stack(self.maps, dim=0)  # (num_selected_layers, h, w, B, M)
+        maps = torch.einsum('l h w b m -> h w b m', maps)  # sum across layers
+        maps = rearrange(maps, 'h w b m -> b m h w')  # (B, M, h, w)
+
+        maps_min = maps.amin(dim=(-2, -1), keepdim=True)
+        maps_max = maps.amax(dim=(-2, -1), keepdim=True)
+        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
+        maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
+        return maps
+
+
 class TimmCVWrapper(CopyAttrWrapper):
     """
     A timm-specific wrapper that propagates gradients from the last layer backward through

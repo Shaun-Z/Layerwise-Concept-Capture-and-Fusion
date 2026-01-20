@@ -276,3 +276,110 @@ def test_timm_cv_wrapper_aggregate_maps(model, batch_size, layer_indices):
     # Aggregated maps should be (B, M, H*patch_size, W*patch_size)
     # With patch_size=16 and grid_size=14, output should be (batch_size, num_concepts, 224, 224)
     assert maps.shape == (batch_size, num_concepts, 224, 224)
+
+
+# =============================================================================
+# TimmFCVWrapper Tests
+# =============================================================================
+
+from lccf.backends.timm.wrapper import TimmFCVWrapper
+
+
+@pytest.mark.parametrize("batch_size, layer_indices", [
+                                (10, [1, 3, 5]),
+                                (2, [0, 4, 7, 11]),
+                                ])
+def test_timm_fcv_wrapper(model, batch_size, layer_indices):
+    # Test that we can create a TimmFCVWrapper
+    wrapper = TimmFCVWrapper(model, layer_indices=layer_indices)
+    device = wrapper._get_device_for_call()
+    assert wrapper is not None
+    assert isinstance(device, torch.device)
+
+
+@pytest.mark.parametrize("batch_size, layer_indices", [
+                                (10, [0, 11]),
+                                (5, [0, 5, 11]),
+                                ])
+def test_timm_fcv_wrapper_forward(model, batch_size, layer_indices):
+    # Test that we can extract features from a dummy input
+    dummy_input = torch.randn(batch_size, 3, 224, 224)
+    wrapper = TimmFCVWrapper(model, layer_indices=layer_indices)
+    features = wrapper.forward_features(dummy_input)
+
+    assert wrapper.embed_dim == 768  # ViT-B-16 embed dim
+    assert features.shape == (batch_size, 197, 768)  # (B, N, D) with CLS token
+    # All 12 layers have block_ins (ViT-B-16 has 12 blocks)
+    assert len(wrapper.block_ins) == 12
+
+
+@pytest.mark.parametrize("batch_size, layer_indices", [
+                                (5, [0, 11]),
+                                (3, [0, 5, 11]),
+                                ])
+def test_timm_fcv_wrapper_dot_concept_vectors(model, batch_size, layer_indices):
+    # Test that dot_concept_vectors works and stores the expected outputs
+    dummy_input = torch.randn(batch_size, 3, 224, 224)
+    wrapper = TimmFCVWrapper(model, layer_indices=layer_indices)
+    features = wrapper.forward_features(dummy_input)
+    
+    # All 12 layers have block_ins
+    assert len(wrapper.block_ins) == 12
+    
+    # Extract concept vector from classifier head
+    num_concepts = 1
+    concept_vectors = model.head.weight[281].unsqueeze(0).detach()  # tabby cat class, shape (1, D)
+    concept_vectors = torch.nn.functional.normalize(concept_vectors, dim=-1)
+    
+    wrapper.dot_concept_vectors(concept_vectors)
+    
+    # Check that attention gradients are stored for ALL 12 layers
+    assert len(wrapper.attn_grads) == 12
+    # Check shape of attention gradients: (M, B, num_heads, N, N)
+    for attn_grad in wrapper.attn_grads:
+        assert attn_grad.shape == (num_concepts, batch_size, wrapper.num_heads, 197, 197)
+    
+    # Check that token gradients are stored for ALL 12 layers
+    assert len(wrapper.token_grads) == 12
+    # Check shape of token gradients: (B, M, N, D)
+    for token_grad in wrapper.token_grads:
+        assert token_grad.shape == (batch_size, num_concepts, 197, 768)
+    
+    # Check that maps are stored only for layers in layer_indices
+    # Format: (H, W, B, M) to be compatible with visualize_layerwise_maps
+    assert len(wrapper.maps) == len(layer_indices)
+    for expl_map in wrapper.maps:
+        assert expl_map.shape == (14, 14, batch_size, num_concepts)
+    
+    # Check that sim_bms are stored only for layers in layer_indices
+    assert len(wrapper.sim_bms) == len(layer_indices)
+    for sim_bm in wrapper.sim_bms:
+        assert sim_bm.shape == (batch_size, num_concepts)
+
+
+@pytest.mark.parametrize("batch_size, layer_indices", [
+                                (5, [0, 11]),
+                                (3, [0, 3, 6, 9, 11]),
+                                ])
+def test_timm_fcv_wrapper_aggregate_maps(model, batch_size, layer_indices):
+    # Test aggregation of layerwise maps
+    dummy_input = torch.randn(batch_size, 3, 224, 224)
+    wrapper = TimmFCVWrapper(model, layer_indices=layer_indices)
+    
+    features = wrapper.forward_features(dummy_input)
+    # All 12 layers have block_ins
+    assert len(wrapper.block_ins) == 12
+    
+    # Extract concept vector from classifier head
+    num_concepts = 1
+    concept_vectors = model.head.weight[281].unsqueeze(0).detach()  # tabby cat class
+    concept_vectors = torch.nn.functional.normalize(concept_vectors, dim=-1)
+    
+    wrapper.dot_concept_vectors(concept_vectors)
+    # Maps are stored only for layers in layer_indices
+    assert len(wrapper.maps) == len(layer_indices)
+    
+    maps = wrapper.aggregate_layerwise_maps()
+    # Aggregated maps should be (B, M, H*patch_size, W*patch_size)
+    # With patch_size=16 and grid_size=14, output should be (batch_size, num_concepts, 224, 224)
+    assert maps.shape == (batch_size, num_concepts, 224, 224)

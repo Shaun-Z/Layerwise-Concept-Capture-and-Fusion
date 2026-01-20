@@ -281,6 +281,254 @@ class OpenCLIPWrapper(CopyAttrWrapper):
         self.sim_bms = []
 
 
+class OpenCLIPFCVWrapper(CopyAttrWrapper):
+    """
+    An OpenCLIP-specific wrapper that propagates gradients from the last layer backward through
+    ALL transformer blocks, using ALL tokens' gradients as concept vectors for each layer.
+    
+    Key behavior:
+    - All blocks do backpropagation, layer_indices is only for choosing visualized layers
+    - For the deepest layer, concept_vectors shape is (M, D) in latent space (512)
+    - For mid layers, concept_vectors shape is (N, B, M, D) - full token gradients in hidden space (768)
+    - Special handling for OpenCLIP: Before the loop, project to latent space:
+      feat = block_output  # (N, B, 768)
+      latent_feat = F.normalize(self.visual.ln_post(feat) @ self.visual.proj, dim=-1)  # (N, B, 512)
+      sim_bm = torch.einsum('n b d, m d -> n b m', latent_feat, concept_vectors).sum(dim=0)  # (B, M)
+    - Then compute the output tokens' grad (N, B, D) from sim_bm, which serves as first concept vector
+    
+    This wrapper processes all layers in reverse order (from deepest to shallowest).
+    """
+    def __init__(self, model: Any, layer_indices: Optional[List[int]] = None, include_private: bool = False):
+        # Get the number of blocks before calling super().__init__
+        num_blocks = len(model.visual.transformer.resblocks)
+        
+        # Store layer_indices for aggregation, but use ALL layers for hook registration
+        all_layer_indices = list(range(num_blocks))
+        
+        # The copying behavior is done by the parent class CopyAttrWrapper
+        # Pass ALL layer indices for hook registration
+        super().__init__(model, layer_indices=all_layer_indices, include_private=include_private)
+
+        # Store patch info for later use
+        self.patch_size = self.visual.patch_size[0]
+        self.num_heads = self.visual.transformer.resblocks[0].attn.num_heads
+        self._num_blocks = num_blocks
+
+        self.pseudo_handles = []
+        self.normal_handles = []
+        
+        # Store the user's requested layer_indices for aggregation only
+        if layer_indices is None:
+            self._aggregate_layer_indices = all_layer_indices
+        else:
+            self._aggregate_layer_indices = list(layer_indices)
+
+        self.reset()
+        
+        # Register hooks in normal mode to capture block inputs
+        self.switch_to_normal_mode()
+
+    def reset(self):
+        """Reset the stored results and maps."""
+        self.block_ins = []
+        self.attn_weight = None
+        self.attn_grads = []     # Store attention weight gradients
+        self.token_grads = []    # Store input tokens' gradients (N, B, M, D)
+        self.maps = []
+        self.sim_bms = []        # Store similarity weights for visualization
+
+    def _save_block_input(self, module, input, output):
+        self.block_ins.append(input[0])  # (N, B, D)
+
+    def switch_to_pseudo_mode(self):
+        """Switch the MultiheadAttention modules to standard mode that returns attention weights."""
+        for handle in self.normal_handles:
+            handle.remove()
+        self.normal_handles = []
+        for idx in self._requested_hook_indices:
+            block = self.visual.transformer.resblocks[idx]
+            assert hasattr(block, 'attention'), "The block does not have attention attribute."
+            block.attention = types.MethodType(OpenCLIPFCVWrapper.__attention_with_weights, block)
+            block.attn.forward = types.MethodType(MultiheadAttention_forward, block.attn)
+            for name, param in block.named_parameters():
+                param.requires_grad = True
+            self.pseudo_handles.append(block.attn.register_forward_hook(self._save_attn_hook))
+
+    def switch_to_normal_mode(self):
+        """Switch back to the normal MultiheadAttention modules."""
+        for handle in self.pseudo_handles:
+            handle.remove()
+        self.pseudo_handles = []
+        for idx in self._requested_hook_indices:
+            block = self.visual.transformer.resblocks[idx]
+            self.normal_handles.append(block.register_forward_hook(self._save_block_input))
+            assert hasattr(block, 'attention'), "The block does not have attention attribute."
+            block.attn.forward = types.MethodType(MultiheadAttention_forward, block.attn)
+            for name, param in block.named_parameters():
+                param.requires_grad = False
+
+    def __attention_with_weights(
+        self,
+        q_x: torch.Tensor,
+        k_x: Optional[torch.Tensor] = None,
+        v_x: Optional[torch.Tensor] = None,
+        attn_mask: Optional[torch.Tensor] = None,
+    ):
+        k_x = k_x if k_x is not None else q_x
+        v_x = v_x if v_x is not None else q_x
+
+        attn_mask = attn_mask.to(q_x.dtype) if attn_mask is not None else None
+
+        attn_output, attn_weight = self.attn(
+            q_x, k_x, v_x, need_weights=True, attn_mask=attn_mask, average_attn_weights=False
+        )
+        return attn_output
+
+    def _save_attn_hook(self, module, input, output):
+        # attn_weights: (B*num_heads, N, N) from MultiheadAttention_forward
+        self.attn_weight = output[1]
+
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 1):
+        """Compute gradient-based concept activation maps using full token backpropagation.
+        
+        For OpenCLIP:
+        - First, compute the initial gradient from the deepest block output projected to latent space
+        - Then propagate through all layers using full token gradients
+        
+        Args:
+            concept_vectors (torch.Tensor): [num_concepts, latent_dim] - normalized concept vectors.
+                For OpenCLIP, this should be text embeddings in the shared latent space (e.g., 512-dim).
+            power (int): Power for similarity scaling. Default: 1
+        
+        Note:
+            Gradients are computed for ALL layers (0 to num_blocks-1).
+            The layer_indices parameter in __init__ only affects aggregation.
+        """
+        w = h = int(math.sqrt(self.block_ins[0].shape[0] - 1))  # Exclude CLS token
+        self.switch_to_pseudo_mode()
+        
+        # Process ALL layers in reverse order (from deepest to shallowest)
+        sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
+        deepest_layer_idx = sorted_indices[0][1]
+        
+        # We'll collect results in reverse order (deepest to shallowest), then reverse at the end
+        attn_grads_reversed = []
+        token_grads_reversed = []
+        maps_reversed = []
+        sim_bms_reversed = []
+        
+        # Create a set for fast lookup of which layers to store maps/sim_bms for
+        aggregate_layer_set = set(self._aggregate_layer_indices)
+        
+        # For the deepest layer, use the text embeddings directly
+        # concept_vectors shape: (M, latent_dim=512)
+        current_concept_vectors = concept_vectors  # (M, D=512) for deepest layer
+        is_deepest = True
+        
+        for enum_idx, layer_idx in sorted_indices:
+            self.visual.zero_grad()
+            block = self.visual.transformer.resblocks[layer_idx]
+            data_in = self.block_ins[enum_idx]  # (N, B, D=768)
+            
+            # Get input tokens - requires grad for computing token gradients
+            input_tokens = data_in.clone()
+            input_tokens.requires_grad_(True)
+            
+            # Run through the block: block(x) returns (N, B, D)
+            block_output = block(input_tokens)  # (N, B, D=768)
+            
+            if is_deepest:
+                # For the deepest layer: project ALL tokens to latent space
+                # block_output: (N, B, D=768)
+                latent_feat = self.visual.ln_post(block_output) @ self.visual.proj  # (N, B, 512)
+                latent_feat_normalized = F.normalize(latent_feat, dim=-1)  # (N, B, 512)
+                
+                # Compute similarity: sum over tokens
+                # current_concept_vectors: (M, 512)
+                sim_bm = torch.einsum('n b d, m d -> n b m', latent_feat_normalized, current_concept_vectors)  # (N, B, M)
+                sim_bm = sim_bm.sum(dim=0)  # (B, M)
+                is_deepest = False
+            else:
+                # For other layers: concept_vectors is (N, B, M, D) in hidden space
+                # block_output: (N, B, D=768)
+                latent_feat = F.normalize(block_output, dim=-1)  # (N, B, D)
+                sim_bm = torch.einsum('n b d, n b m d -> b m', latent_feat, current_concept_vectors)  # (B, M)
+            
+            if power == 0:
+                weight = torch.ones_like(sim_bm)
+            else:
+                weight = torch.abs(sim_bm.clone().detach()).pow(power)
+                sim_bm = sim_bm * weight  # (B, M)
+            sim = sim_bm.sum(dim=0)  # (B, M) -> (M,)
+            
+            # Store similarity weight only for layers in layer_indices
+            if layer_idx in aggregate_layer_set:
+                sim_bms_reversed.append(weight)  # (B, M)
+            
+            # Compute gradients of sim w.r.t. attn_weight and input_tokens for each concept
+            eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
+            grads = torch.autograd.grad(
+                outputs=sim,
+                inputs=[self.attn_weight, input_tokens],
+                grad_outputs=eye,
+                retain_graph=True,
+                create_graph=False,
+                is_grads_batched=True,
+                allow_unused=True
+            )
+            
+            attn_grad = grads[0]  # (M, B*num_heads, N, N)
+            token_grad = grads[1]  # (M, N, B, D) - gradient of all input tokens for each concept
+            
+            # Store attention gradient
+            if attn_grad is not None:
+                attn_grad = torch.clamp(attn_grad, min=0.)
+                attn_grad = rearrange(attn_grad, 'm (b h) n1 n2 -> m b h n1 n2', h=self.num_heads)
+                attn_grads_reversed.append(attn_grad)
+                
+                # Store explanation map only for layers in layer_indices
+                if layer_idx in aggregate_layer_set:
+                    # Compute explanation map: average over heads and query positions, exclude CLS
+                    image_relevance = attn_grad.mean(dim=2).mean(dim=-2)[..., 1:]  # (M, B, N-1)
+                    expl_map = rearrange(image_relevance, 'm b (h w) -> h w b m', w=w, h=h)
+                    maps_reversed.append(expl_map)
+            
+            # Store token gradients and use as concept_vectors for the previous (shallower) layer
+            if token_grad is not None:
+                # token_grad shape: (M, N, B, D), transpose to (N, B, M, D)
+                token_grad_transposed = token_grad.permute(1, 2, 0, 3)  # (N, B, M, D)
+                token_grads_reversed.append(token_grad_transposed)
+                # Use normalized token gradients as concept vectors for the next layer
+                current_concept_vectors = F.normalize(token_grad_transposed, dim=-1)  # (N, B, M, D)
+        
+        # Reverse to get forward order (shallowest to deepest)
+        self.attn_grads = attn_grads_reversed[::-1]
+        self.token_grads = token_grads_reversed[::-1]
+        self.maps = maps_reversed[::-1]
+        self.sim_bms = sim_bms_reversed[::-1]
+        
+        self.switch_to_normal_mode()
+
+    def aggregate_layerwise_maps(self):
+        """Aggregate the stored maps across the layers specified in layer_indices.
+        
+        Returns:
+            torch.Tensor: Aggregated attention maps of shape [B, num_concepts, H, W]
+        """
+        if not self.maps:
+            raise ValueError("No attention maps stored. Please run a forward pass and dot_concept_vectors first.")
+        
+        maps = torch.stack(self.maps, dim=0)  # (num_selected_layers, h, w, B, M)
+        maps = torch.einsum('l h w b m -> h w b m', maps)  # sum across layers
+        maps = rearrange(maps, 'h w b m -> b m h w')  # (B, M, h, w)
+
+        maps_min = maps.amin(dim=(-2, -1), keepdim=True)
+        maps_max = maps.amax(dim=(-2, -1), keepdim=True)
+        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
+        maps = F.interpolate(maps, scale_factor=self.patch_size, mode='bilinear')
+        return maps
+
+
 class OpenCLIPCVWrapper(CopyAttrWrapper):
     """
     An OpenCLIP-specific wrapper that propagates gradients from the last layer backward through
