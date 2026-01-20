@@ -297,6 +297,9 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
     - Then compute the output tokens' grad (N, B, D) from sim_bm, which serves as first concept vector
     
     This wrapper processes all layers in reverse order (from deepest to shallowest).
+    
+    Note: Unlike FastWrapper/CVWrapper, this wrapper does not use pseudo/normal mode switching
+    since it needs full attention (not CLS-only) for computing gradients of all tokens.
     """
     def __init__(self, model: Any, layer_indices: Optional[List[int]] = None, include_private: bool = False):
         # Get the number of blocks before calling super().__init__
@@ -313,9 +316,6 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
         self.patch_size = self.visual.patch_size[0]
         self.num_heads = self.visual.transformer.resblocks[0].attn.num_heads
         self._num_blocks = num_blocks
-
-        self.pseudo_handles = []
-        self.normal_handles = []
         
         # Store the user's requested layer_indices for aggregation only
         if layer_indices is None:
@@ -325,8 +325,16 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
 
         self.reset()
         
-        # Register hooks in normal mode to capture block inputs
-        self.switch_to_normal_mode()
+        # Set up hooks and attention forward for all layers
+        for idx in self._requested_hook_indices:
+            block = self.visual.transformer.resblocks[idx]
+            for name, param in block.named_parameters():
+                param.requires_grad = True
+            assert hasattr(block, 'attention'), "The block does not have attention attribute."
+            block.attention = types.MethodType(OpenCLIPFCVWrapper.__attention_with_weights, block)
+            block.attn.forward = types.MethodType(MultiheadAttention_forward, block.attn)
+            block.attn.register_forward_hook(self._save_attn_hook)
+            block.register_forward_hook(self._save_block_input)
 
     def reset(self):
         """Reset the stored results and maps."""
@@ -339,33 +347,6 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
 
     def _save_block_input(self, module, input, output):
         self.block_ins.append(input[0])  # (N, B, D)
-
-    def switch_to_pseudo_mode(self):
-        """Switch the MultiheadAttention modules to standard mode that returns attention weights."""
-        for handle in self.normal_handles:
-            handle.remove()
-        self.normal_handles = []
-        for idx in self._requested_hook_indices:
-            block = self.visual.transformer.resblocks[idx]
-            assert hasattr(block, 'attention'), "The block does not have attention attribute."
-            block.attention = types.MethodType(OpenCLIPFCVWrapper.__attention_with_weights, block)
-            block.attn.forward = types.MethodType(MultiheadAttention_forward, block.attn)
-            for name, param in block.named_parameters():
-                param.requires_grad = True
-            self.pseudo_handles.append(block.attn.register_forward_hook(self._save_attn_hook))
-
-    def switch_to_normal_mode(self):
-        """Switch back to the normal MultiheadAttention modules."""
-        for handle in self.pseudo_handles:
-            handle.remove()
-        self.pseudo_handles = []
-        for idx in self._requested_hook_indices:
-            block = self.visual.transformer.resblocks[idx]
-            self.normal_handles.append(block.register_forward_hook(self._save_block_input))
-            assert hasattr(block, 'attention'), "The block does not have attention attribute."
-            block.attn.forward = types.MethodType(MultiheadAttention_forward, block.attn)
-            for name, param in block.named_parameters():
-                param.requires_grad = False
 
     def __attention_with_weights(
         self,
@@ -405,7 +386,6 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
             The layer_indices parameter in __init__ only affects aggregation.
         """
         w = h = int(math.sqrt(self.block_ins[0].shape[0] - 1))  # Exclude CLS token
-        self.switch_to_pseudo_mode()
         
         # Process ALL layers in reverse order (from deepest to shallowest)
         sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
@@ -505,8 +485,6 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
         self.token_grads = token_grads_reversed[::-1]
         self.maps = maps_reversed[::-1]
         self.sim_bms = sim_bms_reversed[::-1]
-        
-        self.switch_to_normal_mode()
 
     def aggregate_layerwise_maps(self):
         """Aggregate the stored maps across the layers specified in layer_indices.

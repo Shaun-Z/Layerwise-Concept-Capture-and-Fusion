@@ -309,6 +309,9 @@ class TimmFCVWrapper(CopyAttrWrapper):
       sim_bm = torch.einsum('b n d, b m n d -> b m', latent_feat, concept_vectors)
     
     This wrapper processes all layers in reverse order (from deepest to shallowest).
+    
+    Note: Unlike FastWrapper/CVWrapper, this wrapper does not use pseudo/normal mode switching
+    since it needs full attention (not CLS-only) for computing gradients of all tokens.
     """
     def __init__(self, model: Any, layer_indices: Optional[List[int]] = None, include_private: bool = False):
         # Get the number of blocks before calling super().__init__
@@ -325,9 +328,6 @@ class TimmFCVWrapper(CopyAttrWrapper):
         self._patch_size = model.patch_embed.proj.kernel_size[0]
         self.num_heads = model.blocks[0].attn.num_heads
         self._num_blocks = num_blocks
-
-        self.pseudo_handles = []
-        self.normal_handles = []
         
         # Store the user's requested layer_indices for aggregation only
         if layer_indices is None:
@@ -337,8 +337,15 @@ class TimmFCVWrapper(CopyAttrWrapper):
 
         self.reset()
         
-        # Register hooks in normal mode to capture block inputs and outputs
-        self.switch_to_normal_mode()
+        # Set up hooks and attention forward for all layers
+        for idx in self._requested_hook_indices:
+            block = self.blocks[idx]
+            for name, param in block.named_parameters():
+                param.requires_grad = True
+            # Override attention forward to return attention weights
+            block.attn.forward = types.MethodType(Attention_forward, block.attn)
+            block.attn.register_forward_hook(self._save_attn_hook)
+            block.register_forward_hook(self._save_block_input)
 
     def reset(self):
         """Reset the stored results and maps."""
@@ -353,36 +360,6 @@ class TimmFCVWrapper(CopyAttrWrapper):
         # input is a tuple, input[0] is the actual input tensor
         # timm block input: (B, N, D)
         self.block_ins.append(input[0])  # (B, N, D)
-
-    def switch_to_pseudo_mode(self):
-        """Switch the Attention modules to standard mode that returns attention weights.
-        
-        Unlike CVWrapper which only attends to CLS token, FCVWrapper uses full attention
-        to compute gradients for all tokens.
-        """
-        for handle in self.normal_handles:
-            handle.remove()
-        self.normal_handles = []
-        for idx in self._requested_hook_indices:
-            block = self.blocks[idx]
-            # Use Attention_forward which returns all attention weights
-            block.attn.forward = types.MethodType(Attention_forward, block.attn)
-            for name, param in block.named_parameters():
-                param.requires_grad = True
-            self.pseudo_handles.append(block.attn.register_forward_hook(self._save_attn_hook))
-
-    def switch_to_normal_mode(self):
-        """Switch back to the normal Attention modules and register input hooks."""
-        for handle in self.pseudo_handles:
-            handle.remove()
-        self.pseudo_handles = []
-        for idx in self._requested_hook_indices:
-            block = self.blocks[idx]
-            self.normal_handles.append(block.register_forward_hook(self._save_block_input))
-            # Restore attention forward method
-            block.attn.forward = types.MethodType(Attention_forward, block.attn)
-            for name, param in block.named_parameters():
-                param.requires_grad = False
 
     def _save_attn_hook(self, module, input, output):
         # attn_weights: (B, num_heads, N, N) from Attention_forward
@@ -406,7 +383,6 @@ class TimmFCVWrapper(CopyAttrWrapper):
             The layer_indices parameter in __init__ only affects aggregation.
         """
         w = h = int(math.sqrt(self.block_ins[0].shape[1] - 1))  # Exclude CLS token, (B, N, D)
-        self.switch_to_pseudo_mode()
         
         # Process ALL layers in reverse order (from deepest to shallowest)
         sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
@@ -506,8 +482,6 @@ class TimmFCVWrapper(CopyAttrWrapper):
         self.token_grads = token_grads_reversed[::-1]
         self.maps = maps_reversed[::-1]
         self.sim_bms = sim_bms_reversed[::-1]
-        
-        self.switch_to_normal_mode()
 
     def aggregate_layerwise_maps(self):
         """Aggregate the stored maps across the layers specified in layer_indices.

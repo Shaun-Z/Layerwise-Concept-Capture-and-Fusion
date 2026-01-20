@@ -308,6 +308,9 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
     
     This wrapper processes all layers in reverse order (from deepest to shallowest).
     Tensor layout: (B, N, D) - same as TorchvisionWrapper
+    
+    Note: Unlike FastWrapper/CVWrapper, this wrapper does not use pseudo/normal mode switching
+    since it needs full attention (not CLS-only) for computing gradients of all tokens.
     """
     def __init__(self, model: Any, layer_indices: Optional[List[int]] = None, include_private: bool = False):
         # Get the number of blocks before calling super().__init__
@@ -325,9 +328,6 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
         self._hidden_dim = model.hidden_dim
         self.num_heads = model.encoder.layers[0].self_attention.num_heads
         self._num_blocks = num_blocks
-
-        self.pseudo_handles = []
-        self.normal_handles = []
         
         # Store the user's requested layer_indices for aggregation only
         if layer_indices is None:
@@ -337,8 +337,17 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
 
         self.reset()
         
-        # Register hooks in normal mode to capture block inputs
-        self.switch_to_normal_mode()
+        # Set up hooks and attention forward for all layers
+        for idx in self._requested_hook_indices:
+            block = self.encoder.layers[idx]
+            for name, param in block.named_parameters():
+                param.requires_grad = True
+            # Use MultiheadAttention_forward_batch_first which returns attention weights
+            block.self_attention.forward = types.MethodType(MultiheadAttention_forward_batch_first, block.self_attention)
+            # Use EncoderBlock_forward which captures attention weights
+            block.forward = types.MethodType(EncoderBlock_forward, block)
+            block.register_forward_hook(self._save_attn_hook)
+            block.register_forward_hook(self._save_block_input)
 
     def reset(self):
         """Reset the stored results and maps."""
@@ -353,34 +362,6 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
         # input is a tuple, input[0] is the actual input tensor
         # torchvision block input: (B, N, D)
         self.block_ins.append(input[0])  # (B, N, D)
-
-    def switch_to_pseudo_mode(self):
-        """Switch the Attention modules to standard mode that returns attention weights."""
-        for handle in self.normal_handles:
-            handle.remove()
-        self.normal_handles = []
-        for idx in self._requested_hook_indices:
-            block = self.encoder.layers[idx]
-            # Use MultiheadAttention_forward_batch_first which returns attention weights
-            block.self_attention.forward = types.MethodType(MultiheadAttention_forward_batch_first, block.self_attention)
-            # Use EncoderBlock_forward which captures attention weights
-            block.forward = types.MethodType(EncoderBlock_forward, block)
-            for name, param in block.named_parameters():
-                param.requires_grad = True
-            self.pseudo_handles.append(block.register_forward_hook(self._save_attn_hook))
-
-    def switch_to_normal_mode(self):
-        """Switch back to the normal Attention modules."""
-        for handle in self.pseudo_handles:
-            handle.remove()
-        self.pseudo_handles = []
-        for idx in self._requested_hook_indices:
-            block = self.encoder.layers[idx]
-            self.normal_handles.append(block.register_forward_hook(self._save_block_input))
-            # Restore attention forward method
-            block.self_attention.forward = types.MethodType(MultiheadAttention_forward_batch_first, block.self_attention)
-            for name, param in block.named_parameters():
-                param.requires_grad = False
 
     def _save_attn_hook(self, module, input, output):
         # attn_weights: (B*num_heads, N, N) from EncoderBlock_forward
@@ -404,7 +385,6 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
             The layer_indices parameter in __init__ only affects aggregation.
         """
         w = h = int(math.sqrt(self.block_ins[0].shape[1] - 1))  # Exclude CLS token, (B, N, D)
-        self.switch_to_pseudo_mode()
         
         # Process ALL layers in reverse order (from deepest to shallowest)
         sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
@@ -497,8 +477,6 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
         self.token_grads = token_grads_reversed[::-1]
         self.maps = maps_reversed[::-1]
         self.sim_bms = sim_bms_reversed[::-1]
-        
-        self.switch_to_normal_mode()
 
     def aggregate_layerwise_maps(self):
         """Aggregate the stored maps across the layers specified in layer_indices.
