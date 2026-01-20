@@ -343,7 +343,6 @@ class TimmFCVWrapper(CopyAttrWrapper):
     def reset(self):
         """Reset the stored results and maps."""
         self.block_ins = []
-        self.block_outs = []
         self.attn_weight = None
         self.attn_grads = []     # Store attention weight gradients
         self.token_grads = []    # Store input tokens' gradients (B, M, N, D)
@@ -354,10 +353,6 @@ class TimmFCVWrapper(CopyAttrWrapper):
         # input is a tuple, input[0] is the actual input tensor
         # timm block input: (B, N, D)
         self.block_ins.append(input[0])  # (B, N, D)
-        
-    def _save_block_output(self, module, input, output):
-        # timm block output: (B, N, D)
-        self.block_outs.append(output)  # (B, N, D)
 
     def switch_to_pseudo_mode(self):
         """Switch the Attention modules to standard mode that returns attention weights.
@@ -377,14 +372,13 @@ class TimmFCVWrapper(CopyAttrWrapper):
             self.pseudo_handles.append(block.attn.register_forward_hook(self._save_attn_hook))
 
     def switch_to_normal_mode(self):
-        """Switch back to the normal Attention modules and register input/output hooks."""
+        """Switch back to the normal Attention modules and register input hooks."""
         for handle in self.pseudo_handles:
             handle.remove()
         self.pseudo_handles = []
         for idx in self._requested_hook_indices:
             block = self.blocks[idx]
             self.normal_handles.append(block.register_forward_hook(self._save_block_input))
-            self.normal_handles.append(block.register_forward_hook(self._save_block_output))
             # Restore attention forward method
             block.attn.forward = types.MethodType(Attention_forward, block.attn)
             for name, param in block.named_parameters():
@@ -416,7 +410,6 @@ class TimmFCVWrapper(CopyAttrWrapper):
         
         # Process ALL layers in reverse order (from deepest to shallowest)
         sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
-        deepest_layer_idx = sorted_indices[0][1]
         
         # For the first (deepest) layer, use the provided concept_vectors directly
         # concept_vectors shape: (M, D)
