@@ -4,14 +4,14 @@ from torchvision.transforms import Compose, Resize, InterpolationMode, Normalize
 from .types import TimmViT, TorchViT, OpenCLIPViT
 from .wrap import CopyAttrWrapper
 # Import the specific backend wrapper (if it exists)
-from .backends.openclip.wrapper import OpenCLIPWrapper, OpenCLIPFastWrapper, OpenCLIPCVWrapper
-from .backends.timm.wrapper import TimmWrapper, TimmFastWrapper, TimmCVWrapper
-from .backends.torchvision.wrapper import TorchvisionWrapper, TorchvisionFastWrapper, TorchvisionCVWrapper
+from .backends.openclip.wrapper import OpenCLIPWrapper, OpenCLIPFastWrapper, OpenCLIPCVWrapper, OpenCLIPFCVWrapper
+from .backends.timm.wrapper import TimmWrapper, TimmFastWrapper, TimmCVWrapper, TimmFCVWrapper
+from .backends.torchvision.wrapper import TorchvisionWrapper, TorchvisionFastWrapper, TorchvisionCVWrapper, TorchvisionFCVWrapper
 
 def detect_and_wrap(model: Any,
                     layer_indices: Optional[List[int]] = None,
                     prefer: Optional[str] = None,
-                    mode: Literal["standard", "fast", "cv"] = "standard",
+                    mode: Literal["standard", "fast", "cv", "fcv"] = "standard",
                     include_private: bool = False) -> CopyAttrWrapper:
     """
     Simply determines and returns a specific backend CopyAttrWrapper instance based on isinstance.
@@ -29,6 +29,8 @@ def detect_and_wrap(model: Any,
             return OpenCLIPFastWrapper(model, layer_indices=layer_indices, include_private=include_private)
         elif mode == "cv":
             return OpenCLIPCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fcv":
+            return OpenCLIPFCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
         else:
             raise ValueError(f"Unknown mode: {mode}")
     if prefer == "timm" and isinstance(model, TimmViT):
@@ -38,6 +40,8 @@ def detect_and_wrap(model: Any,
             return TimmFastWrapper(model, layer_indices=layer_indices, include_private=include_private)
         elif mode == "cv":
             return TimmCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fcv":
+            return TimmFCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
         else:
             raise ValueError(f"Unknown mode: {mode}")
     if prefer == "torchvision" and isinstance(model, TorchViT):
@@ -47,6 +51,8 @@ def detect_and_wrap(model: Any,
             return TorchvisionFastWrapper(model, layer_indices=layer_indices, include_private=include_private)
         elif mode == "cv":
             return TorchvisionCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fcv":
+            return TorchvisionFCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
@@ -58,6 +64,8 @@ def detect_and_wrap(model: Any,
             return OpenCLIPFastWrapper(model, layer_indices=layer_indices, include_private=include_private)
         elif mode == "cv":
             return OpenCLIPCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fcv":
+            return OpenCLIPFCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
         else:
             raise ValueError(f"Unknown mode: {mode}")
     if isinstance(model, TimmViT):
@@ -67,6 +75,8 @@ def detect_and_wrap(model: Any,
             return TimmFastWrapper(model, layer_indices=layer_indices, include_private=include_private)
         elif mode == "cv":
             return TimmCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fcv":
+            return TimmFCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
         else:
             raise ValueError(f"Unknown mode: {mode}")
     if isinstance(model, TorchViT):
@@ -76,6 +86,8 @@ def detect_and_wrap(model: Any,
             return TorchvisionFastWrapper(model, layer_indices=layer_indices, include_private=include_private)
         elif mode == "cv":
             return TorchvisionCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fcv":
+            return TorchvisionFCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
