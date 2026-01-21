@@ -339,6 +339,7 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
     def reset(self):
         """Reset the stored results and maps."""
         self.block_ins = []
+        self.block_outs = []     # Store block outputs during forward pass
         self.attn_weight = None
         self.attn_grads = []     # Store attention weight gradients
         self.token_grads = []    # Store input tokens' gradients (N, B, M, D)
@@ -347,6 +348,7 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
 
     def _save_block_input(self, module, input, output):
         self.block_ins.append(input[0])  # (N, B, D)
+        self.block_outs.append(output)   # (N, B, D) - save block output as well
 
     def __attention_with_weights(
         self,
@@ -407,12 +409,9 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
         # concept vectors in hidden space (N, B, M, D)
         # ============================================================================
         deepest_enum_idx, deepest_layer_idx = sorted_indices[0]
-        deepest_block = self.visual.transformer.resblocks[deepest_layer_idx]
-        deepest_data_in = self.block_ins[deepest_enum_idx]  # (N, B, D=768)
         
-        # Run through the deepest block to get output
-        with torch.no_grad():
-            deepest_block_output = deepest_block(deepest_data_in)  # (N, B, D=768)
+        # Use the saved block output from forward pass (no need to re-run block)
+        deepest_block_output = self.block_outs[deepest_enum_idx]  # (N, B, D=768)
         
         # Compute projection_input.grad via [block_output -> ln_post -> visual.proj -> F.normalize -> concept_vectors]
         projection_input = deepest_block_output.clone().detach()  # (N, B, D=768)
