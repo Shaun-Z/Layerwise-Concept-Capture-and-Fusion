@@ -168,7 +168,7 @@ class TorchvisionFastWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
+        maps = (maps - maps_min) / (maps_max - maps_min)
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
 
@@ -352,9 +352,10 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
     def reset(self):
         """Reset the stored results and maps."""
         self.block_ins = []
-        self.attn_weight = None
+        self.block_outs = []     # Store block outputs during forward pass
+        self.attn_weights = []   # Store attention weights for all layers
         self.attn_grads = []     # Store attention weight gradients
-        self.token_grads = []    # Store input tokens' gradients (B, M, N, D)
+        self.token_grads = []    # Store input tokens' gradients (M, B, N, D)
         self.maps = []
         self.sim_bms = []        # Store similarity weights for visualization
 
@@ -362,23 +363,25 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
         # input is a tuple, input[0] is the actual input tensor
         # torchvision block input: (B, N, D)
         self.block_ins.append(input[0])  # (B, N, D)
+        self.block_outs.append(output)   # (B, N, D) - save block output as well
 
     def _save_attn_hook(self, module, input, output):
         # attn_weights: (B*num_heads, N, N) from EncoderBlock_forward
         if hasattr(module, '_attn_weights'):
-            self.attn_weight = module._attn_weights
+            self.attn_weights.append(module._attn_weights)
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 1):
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 0):
         """Compute gradient-based concept activation maps using full token backpropagation.
         
-        Backpropagation starts from the last layer using the provided concept_vectors
-        (shape M, D), then propagates through ALL layers. Each layer i uses the full
-        token gradients (B, M, N, D) from layer i+1 as its concept vectors.
+        For Torchvision (no ln_post/visual.proj like OpenCLIP):
+        - Directly use concept_vectors (M, D) for the deepest layer
+        - Then propagate through all layers using full token gradients
+        - Backpropagation computes across all layers; layer_indices is only for aggregation
         
         Args:
             concept_vectors (torch.Tensor): [num_concepts, dim] - normalized concept vectors.
                 For torchvision, typically extracted from model.heads[0].weight for a specific class.
-            power (int): Power for similarity scaling. Default: 1
+            power (int): Power for similarity scaling. Default: 0
         
         Note:
             Gradients are computed for ALL layers (0 to num_blocks-1).
@@ -389,10 +392,6 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
         # Process ALL layers in reverse order (from deepest to shallowest)
         sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
         
-        # For the first (deepest) layer, use the provided concept_vectors directly
-        current_concept_vectors = concept_vectors  # (M, D) for deepest layer
-        is_deepest = True
-        
         # We'll collect results in reverse order (deepest to shallowest), then reverse at the end
         attn_grads_reversed = []
         token_grads_reversed = []
@@ -402,28 +401,31 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
         # Create a set for fast lookup of which layers to store maps/sim_bms for
         aggregate_layer_set = set(self._aggregate_layer_indices)
         
+        # For Torchvision, no pre-computation needed (no ln_post/visual.proj)
+        # Initialize current_concept_vectors with the provided concept_vectors (M, D)
+        current_concept_vectors = F.normalize(concept_vectors, dim=-1)  # (M, D)
+        is_deepest = True
+        
+        # ============================================================================
+        # Main loop: Process all layers in reverse order (from deepest to shallowest)
+        # ============================================================================
         for enum_idx, layer_idx in sorted_indices:
             self.zero_grad()
-            block = self.encoder.layers[layer_idx]
-            data_in = self.block_ins[enum_idx]  # (B, N, D)
+            input_tokens = self.block_ins[enum_idx]  # (B, N, D)
+            block_output = self.block_outs[enum_idx]  # (B, N, D)
+            attn_weight = self.attn_weights[enum_idx]  # (B*num_heads, N, N)
             
-            # Get input tokens - requires grad for computing token gradients
-            input_tokens = data_in.clone()
-            input_tokens.requires_grad_(True)
-            
-            # Run through the block
-            block_output = block(input_tokens)  # (B, N, D)
-            
-            # Apply final LayerNorm
-            latent_feat = F.normalize(self.encoder.ln(block_output), dim=-1)  # (B, N, D)
+            # Compute similarity: dot block_output with current_concept_vectors
+            # block_output: (B, N, D), current_concept_vectors: (M, D) or (M, B, N, D)
+            latent_feat = F.normalize(block_output, dim=-1)  # (B, N, D)
             
             if is_deepest:
                 # For deepest layer: concept_vectors is (M, D)
-                sim_bm = torch.einsum('b n d, m d -> b n m', latent_feat, current_concept_vectors).mean(dim=1)  # (B, M)
+                sim_bm = torch.einsum('b n d, m d -> b m', latent_feat, current_concept_vectors)  # (B, M)
                 is_deepest = False
             else:
-                # For other layers: concept_vectors is (B, M, N, D)
-                sim_bm = torch.einsum('b n d, b m n d -> b m n', latent_feat, current_concept_vectors).mean(dim=2)  # (B, M)
+                # For other layers: concept_vectors is (M, B, N, D)
+                sim_bm = torch.einsum('b n d, m b n d -> b m', latent_feat, current_concept_vectors)  # (B, M)
             
             if power == 0:
                 weight = torch.ones_like(sim_bm)
@@ -440,7 +442,7 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
             eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
             grads = torch.autograd.grad(
                 outputs=sim,
-                inputs=[self.attn_weight, input_tokens],
+                inputs=[attn_weight, input_tokens],
                 grad_outputs=eye,
                 retain_graph=True,
                 create_graph=False,
@@ -465,11 +467,10 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
             
             # Store token gradients and use as concept_vectors for the previous (shallower) layer
             if token_grad is not None:
-                # token_grad shape: (M, B, N, D), transpose to (B, M, N, D)
-                token_grad_transposed = token_grad.permute(1, 0, 2, 3)  # (B, M, N, D)
-                token_grads_reversed.append(token_grad_transposed)
-                # Use normalized token gradients as concept vectors for the next layer
-                current_concept_vectors = F.normalize(token_grad_transposed, dim=-1)  # (B, M, N, D)
+                # token_grad shape: (M, B, N, D)
+                token_grads_reversed.append(token_grad)
+                # Use unnormalized token gradients as concept vectors for the next layer
+                current_concept_vectors = token_grad  # (M, B, N, D)
         
         # Reverse to get forward order (shallowest to deepest)
         self.attn_grads = attn_grads_reversed[::-1]
@@ -492,7 +493,7 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
+        maps = (maps - maps_min) / (maps_max - maps_min)
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
 
@@ -722,7 +723,7 @@ class TorchvisionCVWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
+        maps = (maps - maps_min) / (maps_max - maps_min)
         maps = F.interpolate(maps, scale_factor=self._patch_size, mode='bilinear')
         return maps
 
