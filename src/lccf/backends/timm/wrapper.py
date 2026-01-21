@@ -424,11 +424,11 @@ class TimmFCVWrapper(CopyAttrWrapper):
             
             if is_deepest:
                 # For deepest layer: concept_vectors is (M, D)
-                sim_bm = torch.einsum('b n d, m d -> b m', latent_feat, current_concept_vectors)  # (B, M)
+                sim_bm = torch.einsum('b n d, m d -> b n m', latent_feat, current_concept_vectors).mean(dim=1)  # (B, M)
                 is_deepest = False
             else:
                 # For other layers: concept_vectors is (B, M, N, D)
-                sim_bm = torch.einsum('b n d, b m n d -> b m', latent_feat, current_concept_vectors)  # (B, M)
+                sim_bm = torch.einsum('b n d, b m n d -> b m n', latent_feat, current_concept_vectors).mean(dim=2)  # (B, M)
             
             if power == 0:
                 weight = torch.ones_like(sim_bm)

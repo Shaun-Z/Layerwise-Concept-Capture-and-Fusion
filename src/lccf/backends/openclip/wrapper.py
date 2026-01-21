@@ -425,7 +425,7 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
                 # Compute similarity: sum over tokens
                 # current_concept_vectors: (M, 512)
                 sim_bm = torch.einsum('n b d, m d -> n b m', latent_feat_normalized, current_concept_vectors)  # (N, B, M)
-                sim_bm = sim_bm.sum(dim=0)  # (B, M)
+                sim_bm = sim_bm.mean(dim=0)  # (B, M)
                 is_deepest = False
             else:
                 # For other layers: concept_vectors is (N, B, M, D) in hidden space
@@ -438,7 +438,7 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
             else:
                 weight = torch.abs(sim_bm.clone().detach()).pow(power)
                 sim_bm = sim_bm * weight  # (B, M)
-            sim = sim_bm.sum(dim=0)  # (B, M) -> (M,)
+            sim = sim_bm.mean(dim=0)  # (B, M) -> (M,)
             
             # Store similarity weight only for layers in layer_indices
             if layer_idx in aggregate_layer_set:
