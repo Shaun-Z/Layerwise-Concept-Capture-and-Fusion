@@ -449,8 +449,7 @@ class TimmFCVWrapper(CopyAttrWrapper):
                 grad_outputs=eye,
                 retain_graph=True,
                 create_graph=False,
-                is_grads_batched=True,
-                allow_unused=True
+                is_grads_batched=True
             )
             
             attn_grad = grads[0]  # (M, B, num_heads, N, N)

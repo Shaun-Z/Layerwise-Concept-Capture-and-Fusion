@@ -51,13 +51,19 @@ features = wrapper.encode_image(image_batch)
 print(f"Features shape: {features.shape}")
 
 # %%
-wrapper.dot_concept_vectors(text_embeddings)
+wrapper.dot_concept_vectors(text_embeddings, power=1)
 
 # %%
 maps = torch.stack(wrapper.maps, dim=0)
 
 # %%
-visualize_layerwise_maps(image_batch, wrapper.maps, sim_bms=wrapper.sim_bms, text_prompts=prompts, mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD))
+visualize_layerwise_maps(image_batch,
+                         wrapper.maps,
+                         sim_bms=wrapper.sim_bms,
+                         text_prompts=prompts,
+                         mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD))
+
+# %%
 
 # %%
 maps_aggregated = wrapper.aggregate_layerwise_maps()
