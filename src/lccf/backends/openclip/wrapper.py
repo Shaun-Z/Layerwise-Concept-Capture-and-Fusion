@@ -462,7 +462,7 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
             # Compute similarity: dot block_output with current_concept_vectors
             # block_output: (N, B, D=768), current_concept_vectors: (N, B, M, D=768)
             latent_feat = F.normalize(block_output, dim=-1)  # (N, B, D)
-            sim_bm = torch.einsum('n b d, n b m d -> b m', latent_feat, current_concept_vectors)  # (B, M)
+            sim_bm = torch.einsum('n b d, n b m d -> n b m', latent_feat, current_concept_vectors).mean(dim=0)  # (B, M)
             
             if power == 0:
                 weight = torch.ones_like(sim_bm)
