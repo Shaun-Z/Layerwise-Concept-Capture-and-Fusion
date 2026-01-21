@@ -138,7 +138,7 @@ def visualize_layerwise_maps(
         # heatmaps shape: [num_layers, B, M, H, W]
         heatmaps_min = heatmaps.amin(dim=(-2, -1), keepdim=True)
         heatmaps_max = heatmaps.amax(dim=(-2, -1), keepdim=True)
-        heatmaps = (heatmaps - heatmaps_min) / (heatmaps_max - heatmaps_min + 1e-8)
+        heatmaps = (heatmaps - heatmaps_min) / (heatmaps_max - heatmaps_min)
     else:
         # Global normalization (default behavior)
         heatmaps = (heatmaps - heatmaps.min()) / (heatmaps.max() - heatmaps.min())
