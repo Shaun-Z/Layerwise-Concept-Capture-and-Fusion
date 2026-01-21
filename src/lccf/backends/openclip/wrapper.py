@@ -420,13 +420,13 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
             block_output = block(input_tokens)  # (N, B, D=768)
             
             if is_deepest:
-                # Step 1: Compute output_tokens.grad via [output_tokens -> ln_post -> visual.proj -> F.normalize -> concept_vectors]
-                # This gradient is computed with respect to output_tokens, not including ln_post/proj parameters
-                output_tokens = block_output.clone().detach()  # (N, B, D=768)
-                output_tokens.requires_grad_(True)
+                # Step 1: Compute block_output.grad via [block_output -> ln_post -> visual.proj -> F.normalize -> concept_vectors]
+                # This gradient is computed with respect to block_output, not including ln_post/proj parameters
+                projection_input = block_output.clone().detach()  # (N, B, D=768)
+                projection_input.requires_grad_(True)
                 
                 # Project to latent space: ln_post -> visual.proj -> F.normalize
-                latent_feat = self.visual.ln_post(output_tokens) @ self.visual.proj  # (N, B, 512)
+                latent_feat = self.visual.ln_post(projection_input) @ self.visual.proj  # (N, B, 512)
                 latent_feat_normalized = F.normalize(latent_feat, dim=-1)  # (N, B, 512)
                 
                 # Compute similarity with concept vectors (M, 512)
@@ -434,11 +434,11 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
                 sim_for_grad = sim_for_grad.mean(dim=0)  # (B, M)
                 sim_scalar = sim_for_grad.mean(dim=0)  # (M,)
                 
-                # Compute output_tokens.grad with M concepts
+                # Compute projection_input.grad with M concepts
                 eye = torch.eye(sim_scalar.numel(), device=sim_scalar.device).view(sim_scalar.numel(), *sim_scalar.shape)
-                output_tokens_grad = torch.autograd.grad(
+                projection_input_grad = torch.autograd.grad(
                     outputs=sim_scalar,
-                    inputs=output_tokens,
+                    inputs=projection_input,
                     grad_outputs=eye,
                     retain_graph=False,
                     create_graph=False,
@@ -446,13 +446,13 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
                 )[0]  # (M, N, B, D=768)
                 
                 # Transpose to (N, B, M, D) for consistency with other layers
-                output_tokens_grad = output_tokens_grad.permute(1, 2, 0, 3)  # (N, B, M, D=768)
+                projection_input_grad = projection_input_grad.permute(1, 2, 0, 3)  # (N, B, M, D=768)
                 
-                # Step 2: Use output_tokens.grad as concept vectors to dot with block_output
+                # Step 2: Use projection_input.grad as concept vectors to dot with block_output
                 # This is the start of backpropagation without ln_post/proj parameters
-                # block_output: (N, B, D=768), output_tokens_grad: (N, B, M, D=768)
+                # block_output: (N, B, D=768), projection_input_grad: (N, B, M, D=768)
                 latent_feat = F.normalize(block_output, dim=-1)  # (N, B, D)
-                current_concept_vectors = F.normalize(output_tokens_grad, dim=-1)  # (N, B, M, D)
+                current_concept_vectors = F.normalize(projection_input_grad, dim=-1)  # (N, B, M, D)
                 sim_bm = torch.einsum('n b d, n b m d -> b m', latent_feat, current_concept_vectors)  # (B, M)
                 is_deepest = False
             else:
