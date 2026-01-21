@@ -373,8 +373,11 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
         """Compute gradient-based concept activation maps using full token backpropagation.
         
         For OpenCLIP:
-        - First, compute the initial gradient from the deepest block output projected to latent space
+        - For the deepest layer: First compute output_tokens.grad via [output_tokens -> ln_post -> 
+          visual.proj -> F.normalize -> concept_vectors], then use output_tokens.grad as concept 
+          vectors to dot with output_tokens to start backpropagation
         - Then propagate through all layers using full token gradients
+        - Backpropagation computes across all layers; layer_indices is only for aggregation
         
         Args:
             concept_vectors (torch.Tensor): [num_concepts, latent_dim] - normalized concept vectors.
@@ -399,9 +402,9 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
         # Create a set for fast lookup of which layers to store maps/sim_bms for
         aggregate_layer_set = set(self._aggregate_layer_indices)
         
-        # For the deepest layer, use the text embeddings directly
+        # For the deepest layer, first compute output_tokens.grad to get concept vectors in hidden space
         # concept_vectors shape: (M, latent_dim=512)
-        current_concept_vectors = concept_vectors  # (M, D=512) for deepest layer
+        current_concept_vectors = None  # Will be computed for deepest layer
         is_deepest = True
         
         for enum_idx, layer_idx in sorted_indices:
@@ -417,15 +420,40 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
             block_output = block(input_tokens)  # (N, B, D=768)
             
             if is_deepest:
-                # For the deepest layer: project ALL tokens to latent space
-                # block_output: (N, B, D=768)
-                latent_feat = self.visual.ln_post(block_output) @ self.visual.proj  # (N, B, 512)
+                # Step 1: Compute output_tokens.grad via [output_tokens -> ln_post -> visual.proj -> F.normalize -> concept_vectors]
+                # This gradient is computed with respect to output_tokens, not including ln_post/proj parameters
+                output_tokens = block_output.clone().detach()  # (N, B, D=768)
+                output_tokens.requires_grad_(True)
+                
+                # Project to latent space: ln_post -> visual.proj -> F.normalize
+                latent_feat = self.visual.ln_post(output_tokens) @ self.visual.proj  # (N, B, 512)
                 latent_feat_normalized = F.normalize(latent_feat, dim=-1)  # (N, B, 512)
                 
-                # Compute similarity: sum over tokens
-                # current_concept_vectors: (M, 512)
-                sim_bm = torch.einsum('n b d, m d -> n b m', latent_feat_normalized, current_concept_vectors)  # (N, B, M)
-                sim_bm = sim_bm.mean(dim=0)  # (B, M)
+                # Compute similarity with concept vectors (M, 512)
+                sim_for_grad = torch.einsum('n b d, m d -> n b m', latent_feat_normalized, concept_vectors)  # (N, B, M)
+                sim_for_grad = sim_for_grad.mean(dim=0)  # (B, M)
+                sim_scalar = sim_for_grad.mean(dim=0)  # (M,)
+                
+                # Compute output_tokens.grad with M concepts
+                eye = torch.eye(sim_scalar.numel(), device=sim_scalar.device).view(sim_scalar.numel(), *sim_scalar.shape)
+                output_tokens_grad = torch.autograd.grad(
+                    outputs=sim_scalar,
+                    inputs=output_tokens,
+                    grad_outputs=eye,
+                    retain_graph=False,
+                    create_graph=False,
+                    is_grads_batched=True
+                )[0]  # (M, N, B, D=768)
+                
+                # Transpose to (N, B, M, D) for consistency with other layers
+                output_tokens_grad = output_tokens_grad.permute(1, 2, 0, 3)  # (N, B, M, D=768)
+                
+                # Step 2: Use output_tokens.grad as concept vectors to dot with block_output
+                # This is the start of backpropagation without ln_post/proj parameters
+                # block_output: (N, B, D=768), output_tokens_grad: (N, B, M, D=768)
+                latent_feat = F.normalize(block_output, dim=-1)  # (N, B, D)
+                current_concept_vectors = F.normalize(output_tokens_grad, dim=-1)  # (N, B, M, D)
+                sim_bm = torch.einsum('n b d, n b m d -> b m', latent_feat, current_concept_vectors)  # (B, M)
                 is_deepest = False
             else:
                 # For other layers: concept_vectors is (N, B, M, D) in hidden space
