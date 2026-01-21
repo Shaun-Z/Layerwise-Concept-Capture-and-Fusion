@@ -47,21 +47,22 @@ images = [preprocess(Image.open(requests.get(url, stream=True).raw)) for url in 
 image_batch = torch.stack(images, dim=0).to(device)
 
 # %%
-features = wrapper.encode_image(image_batch)
+features = wrapper.encode_image(image_batch.clone().detach().requires_grad_(True))
 print(f"Features shape: {features.shape}")
 
 # %%
-wrapper.dot_concept_vectors(text_embeddings, power=1)
+wrapper.dot_concept_vectors(text_embeddings, power=0)
 
 # %%
-maps = torch.stack(wrapper.maps, dim=0)
+maps = torch.stack(wrapper.maps, dim=1)
 
 # %%
 visualize_layerwise_maps(image_batch,
                          wrapper.maps,
                          sim_bms=wrapper.sim_bms,
                          text_prompts=prompts,
-                         mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD))
+                         mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD),
+                         normalize_each_map=True)
 
 # %%
 

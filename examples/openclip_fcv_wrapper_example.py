@@ -58,7 +58,7 @@ image = preprocess(Image.open(requests.get(url, stream=True).raw)).unsqueeze(0).
 
 # %%
 # Forward pass to extract features and capture block inputs for ALL layers
-features = wrapper.encode_image(image)
+features = wrapper.encode_image(image.clone().detach().requires_grad_(True))
 print(f"Features shape: {features.shape}")
 print(f"Number of block inputs captured (all layers): {len(wrapper.block_ins)}")
 
@@ -67,7 +67,7 @@ print(f"Number of block inputs captured (all layers): {len(wrapper.block_ins)}")
 # This computes gradients for ALL layers, propagating from layer 11 -> 10 -> ... -> 0
 # For layer 11 (deepest), uses the provided concept_vectors (from text embeddings)
 # For layer i < 11, uses the CLS gradient from layer i+1
-wrapper.dot_concept_vectors(text_embeddings, power=1)
+wrapper.dot_concept_vectors(text_embeddings, power=0)
 
 # %%
 # Access the stored gradients
@@ -90,7 +90,7 @@ visualize_layerwise_maps(image,
                          sim_bms=wrapper.sim_bms,
                          text_prompts=prompts,
                          mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD),
-                        #  normalize_each_map=True
+                         normalize_each_map=True
                          )
 
 # %%

@@ -340,7 +340,7 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
         """Reset the stored results and maps."""
         self.block_ins = []
         self.block_outs = []     # Store block outputs during forward pass
-        self.attn_weight = None
+        self.attn_weights = []
         self.attn_grads = []     # Store attention weight gradients
         self.token_grads = []    # Store input tokens' gradients (N, B, M, D)
         self.maps = []
@@ -369,9 +369,9 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
 
     def _save_attn_hook(self, module, input, output):
         # attn_weights: (B*num_heads, N, N) from MultiheadAttention_forward
-        self.attn_weight = output[1]
+        self.attn_weights.append(output[1])
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 1):
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 0):
         """Compute gradient-based concept activation maps using full token backpropagation.
         
         For OpenCLIP:
@@ -420,9 +420,8 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
         latent_feat_normalized = F.normalize(latent_feat, dim=-1)  # (N, B, 512)
         
         # Compute similarity with concept vectors (M, 512)
-        sim_for_grad = torch.einsum('n b d, m d -> n b m', latent_feat_normalized, concept_vectors)  # (N, B, M)
-        sim_for_grad = sim_for_grad.mean(dim=0)  # (B, M)
-        sim_scalar = sim_for_grad.mean(dim=0)  # (M,)
+        sim_for_grad = torch.einsum('n b d, m d -> b m', latent_feat_normalized, concept_vectors)  # (B, M)
+        sim_scalar = sim_for_grad.sum(dim=0)  # (M,)
         
         # Compute block_output.grad with M concepts
         eye = torch.eye(sim_scalar.numel(), device=sim_scalar.device).view(sim_scalar.numel(), *sim_scalar.shape)
@@ -435,11 +434,8 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
             is_grads_batched=True
         )[0]  # (M, N, B, D=768)
         
-        # Transpose to (N, B, M, D) for consistency with layer loop
-        block_output_grad = block_output_grad.permute(1, 2, 0, 3)  # (N, B, M, D=768)
-        
         # Initialize current_concept_vectors with normalized block_output_grad
-        current_concept_vectors = F.normalize(block_output_grad, dim=-1)  # (N, B, M, D)
+        current_concept_vectors = F.normalize(block_output_grad, dim=-1)  # (M, N, B, D)
         
         # ============================================================================
         # Main loop: Process all layers in reverse order (from deepest to shallowest)
@@ -447,26 +443,21 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
         for enum_idx, layer_idx in sorted_indices:
             self.visual.zero_grad()
             block = self.visual.transformer.resblocks[layer_idx]
-            data_in = self.block_ins[enum_idx]  # (N, B, D=768)
-            
-            # Get input tokens - requires grad for computing token gradients
-            input_tokens = data_in.clone()
-            input_tokens.requires_grad_(True)
-            
-            # Run through the block: block(x) returns (N, B, D)
-            block_output = block(input_tokens)  # (N, B, D=768)
+            input_tokens = self.block_ins[enum_idx]  # (N, B, D=768)
+            block_output = self.block_outs[enum_idx]  # (N, B, D=768)
+            attn_weight = self.attn_weights[enum_idx]  # (B*num_heads, N, N)
             
             # Compute similarity: dot block_output with current_concept_vectors
-            # block_output: (N, B, D=768), current_concept_vectors: (N, B, M, D=768)
+            # block_output: (N, B, D=768), current_concept_vectors: (M, N, B, D=768)
             latent_feat = F.normalize(block_output, dim=-1)  # (N, B, D)
-            sim_bm = torch.einsum('n b d, n b m d -> n b m', latent_feat, current_concept_vectors).mean(dim=0)  # (B, M)
+            sim_bm = torch.einsum('n b d, m n b d -> b m', latent_feat, current_concept_vectors)  # (B, M)
             
             if power == 0:
                 weight = torch.ones_like(sim_bm)
             else:
                 weight = torch.abs(sim_bm.clone().detach()).pow(power)
                 sim_bm = sim_bm * weight  # (B, M)
-            sim = sim_bm.mean(dim=0)  # (B, M) -> (M,)
+            sim = sim_bm.sum(dim=0)  # (B, M) -> (M,)
             
             # Store similarity weight only for layers in layer_indices
             if layer_idx in aggregate_layer_set:
@@ -476,13 +467,13 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
             eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
             grads = torch.autograd.grad(
                 outputs=sim,
-                inputs=[self.attn_weight, input_tokens],
+                inputs=[attn_weight, input_tokens],
                 grad_outputs=eye,
                 retain_graph=True,
                 create_graph=False,
                 is_grads_batched=True
             )
-            
+
             attn_grad = grads[0]  # (M, B*num_heads, N, N)
             token_grad = grads[1]  # (M, N, B, D) - gradient of all input tokens for each concept
             
@@ -501,11 +492,10 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
             
             # Store token gradients and use as concept_vectors for the previous (shallower) layer
             if token_grad is not None:
-                # token_grad shape: (M, N, B, D), transpose to (N, B, M, D)
-                token_grad_transposed = token_grad.permute(1, 2, 0, 3)  # (N, B, M, D)
-                token_grads_reversed.append(token_grad_transposed)
-                # Use normalized token gradients as concept vectors for the next layer
-                current_concept_vectors = F.normalize(token_grad_transposed, dim=-1)  # (N, B, M, D)
+                # token_grad shape: (M, N, B, D)
+                token_grads_reversed.append(token_grad)
+                # Use unnormalized token gradients as concept vectors for the next layer
+                current_concept_vectors = token_grad  # (M, N, B, D)
         
         # Reverse to get forward order (shallowest to deepest)
         self.attn_grads = attn_grads_reversed[::-1]
@@ -528,7 +518,7 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
 
         maps_min = maps.amin(dim=(-2, -1), keepdim=True)
         maps_max = maps.amax(dim=(-2, -1), keepdim=True)
-        maps = (maps - maps_min) / (maps_max - maps_min + 1e-8)
+        maps = (maps - maps_min) / (maps_max - maps_min)
         maps = F.interpolate(maps, scale_factor=self.patch_size, mode='bilinear')
         return maps
 
