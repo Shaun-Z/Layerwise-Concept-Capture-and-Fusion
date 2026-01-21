@@ -402,11 +402,51 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
         # Create a set for fast lookup of which layers to store maps/sim_bms for
         aggregate_layer_set = set(self._aggregate_layer_indices)
         
-        # For the deepest layer, first compute output_tokens.grad to get concept vectors in hidden space
-        # concept_vectors shape: (M, latent_dim=512)
-        current_concept_vectors = None  # Will be computed for deepest layer
-        is_deepest = True
+        # ============================================================================
+        # Pre-compute: For the deepest layer, compute projection_input.grad to get 
+        # concept vectors in hidden space (N, B, M, D)
+        # ============================================================================
+        deepest_enum_idx, deepest_layer_idx = sorted_indices[0]
+        deepest_block = self.visual.transformer.resblocks[deepest_layer_idx]
+        deepest_data_in = self.block_ins[deepest_enum_idx]  # (N, B, D=768)
         
+        # Run through the deepest block to get output
+        with torch.no_grad():
+            deepest_block_output = deepest_block(deepest_data_in)  # (N, B, D=768)
+        
+        # Compute projection_input.grad via [block_output -> ln_post -> visual.proj -> F.normalize -> concept_vectors]
+        projection_input = deepest_block_output.clone().detach()  # (N, B, D=768)
+        projection_input.requires_grad_(True)
+        
+        # Project to latent space: ln_post -> visual.proj -> F.normalize
+        latent_feat = self.visual.ln_post(projection_input) @ self.visual.proj  # (N, B, 512)
+        latent_feat_normalized = F.normalize(latent_feat, dim=-1)  # (N, B, 512)
+        
+        # Compute similarity with concept vectors (M, 512)
+        sim_for_grad = torch.einsum('n b d, m d -> n b m', latent_feat_normalized, concept_vectors)  # (N, B, M)
+        sim_for_grad = sim_for_grad.mean(dim=0)  # (B, M)
+        sim_scalar = sim_for_grad.mean(dim=0)  # (M,)
+        
+        # Compute projection_input.grad with M concepts
+        eye = torch.eye(sim_scalar.numel(), device=sim_scalar.device).view(sim_scalar.numel(), *sim_scalar.shape)
+        projection_input_grad = torch.autograd.grad(
+            outputs=sim_scalar,
+            inputs=projection_input,
+            grad_outputs=eye,
+            retain_graph=False,
+            create_graph=False,
+            is_grads_batched=True
+        )[0]  # (M, N, B, D=768)
+        
+        # Transpose to (N, B, M, D) for consistency with layer loop
+        projection_input_grad = projection_input_grad.permute(1, 2, 0, 3)  # (N, B, M, D=768)
+        
+        # Initialize current_concept_vectors with normalized projection_input_grad
+        current_concept_vectors = F.normalize(projection_input_grad, dim=-1)  # (N, B, M, D)
+        
+        # ============================================================================
+        # Main loop: Process all layers in reverse order (from deepest to shallowest)
+        # ============================================================================
         for enum_idx, layer_idx in sorted_indices:
             self.visual.zero_grad()
             block = self.visual.transformer.resblocks[layer_idx]
@@ -419,47 +459,10 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
             # Run through the block: block(x) returns (N, B, D)
             block_output = block(input_tokens)  # (N, B, D=768)
             
-            if is_deepest:
-                # Step 1: Compute block_output.grad via [block_output -> ln_post -> visual.proj -> F.normalize -> concept_vectors]
-                # This gradient is computed with respect to block_output, not including ln_post/proj parameters
-                projection_input = block_output.clone().detach()  # (N, B, D=768)
-                projection_input.requires_grad_(True)
-                
-                # Project to latent space: ln_post -> visual.proj -> F.normalize
-                latent_feat = self.visual.ln_post(projection_input) @ self.visual.proj  # (N, B, 512)
-                latent_feat_normalized = F.normalize(latent_feat, dim=-1)  # (N, B, 512)
-                
-                # Compute similarity with concept vectors (M, 512)
-                sim_for_grad = torch.einsum('n b d, m d -> n b m', latent_feat_normalized, concept_vectors)  # (N, B, M)
-                sim_for_grad = sim_for_grad.mean(dim=0)  # (B, M)
-                sim_scalar = sim_for_grad.mean(dim=0)  # (M,)
-                
-                # Compute projection_input.grad with M concepts
-                eye = torch.eye(sim_scalar.numel(), device=sim_scalar.device).view(sim_scalar.numel(), *sim_scalar.shape)
-                projection_input_grad = torch.autograd.grad(
-                    outputs=sim_scalar,
-                    inputs=projection_input,
-                    grad_outputs=eye,
-                    retain_graph=False,
-                    create_graph=False,
-                    is_grads_batched=True
-                )[0]  # (M, N, B, D=768)
-                
-                # Transpose to (N, B, M, D) for consistency with other layers
-                projection_input_grad = projection_input_grad.permute(1, 2, 0, 3)  # (N, B, M, D=768)
-                
-                # Step 2: Use projection_input.grad as concept vectors to dot with block_output
-                # This is the start of backpropagation without ln_post/proj parameters
-                # block_output: (N, B, D=768), projection_input_grad: (N, B, M, D=768)
-                latent_feat = F.normalize(block_output, dim=-1)  # (N, B, D)
-                current_concept_vectors = F.normalize(projection_input_grad, dim=-1)  # (N, B, M, D)
-                sim_bm = torch.einsum('n b d, n b m d -> b m', latent_feat, current_concept_vectors)  # (B, M)
-                is_deepest = False
-            else:
-                # For other layers: concept_vectors is (N, B, M, D) in hidden space
-                # block_output: (N, B, D=768)
-                latent_feat = F.normalize(block_output, dim=-1)  # (N, B, D)
-                sim_bm = torch.einsum('n b d, n b m d -> b m', latent_feat, current_concept_vectors)  # (B, M)
+            # Compute similarity: dot block_output with current_concept_vectors
+            # block_output: (N, B, D=768), current_concept_vectors: (N, B, M, D=768)
+            latent_feat = F.normalize(block_output, dim=-1)  # (N, B, D)
+            sim_bm = torch.einsum('n b d, n b m d -> b m', latent_feat, current_concept_vectors)  # (B, M)
             
             if power == 0:
                 weight = torch.ones_like(sim_bm)
