@@ -405,20 +405,18 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
         aggregate_layer_set = set(self._aggregate_layer_indices)
         
         # ============================================================================
-        # Pre-compute: For the deepest layer, compute projection_input.grad to get 
+        # Pre-compute: For the deepest layer, compute block_output.grad to get 
         # concept vectors in hidden space (N, B, M, D)
         # ============================================================================
         deepest_enum_idx, deepest_layer_idx = sorted_indices[0]
         
-        # Use the saved block output from forward pass (no need to re-run block)
+        # Use the saved block output from forward pass directly (no need for clone().detach())
+        # torch.autograd.grad() computes gradients w.r.t. the specified input tensor and stops there,
+        # regardless of whether it's a leaf tensor or part of a larger computation graph
         deepest_block_output = self.block_outs[deepest_enum_idx]  # (N, B, D=768)
         
-        # Compute projection_input.grad via [block_output -> ln_post -> visual.proj -> F.normalize -> concept_vectors]
-        projection_input = deepest_block_output.clone().detach()  # (N, B, D=768)
-        projection_input.requires_grad_(True)
-        
         # Project to latent space: ln_post -> visual.proj -> F.normalize
-        latent_feat = self.visual.ln_post(projection_input) @ self.visual.proj  # (N, B, 512)
+        latent_feat = self.visual.ln_post(deepest_block_output) @ self.visual.proj  # (N, B, 512)
         latent_feat_normalized = F.normalize(latent_feat, dim=-1)  # (N, B, 512)
         
         # Compute similarity with concept vectors (M, 512)
@@ -426,11 +424,11 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
         sim_for_grad = sim_for_grad.mean(dim=0)  # (B, M)
         sim_scalar = sim_for_grad.mean(dim=0)  # (M,)
         
-        # Compute projection_input.grad with M concepts
+        # Compute block_output.grad with M concepts
         eye = torch.eye(sim_scalar.numel(), device=sim_scalar.device).view(sim_scalar.numel(), *sim_scalar.shape)
-        projection_input_grad = torch.autograd.grad(
+        block_output_grad = torch.autograd.grad(
             outputs=sim_scalar,
-            inputs=projection_input,
+            inputs=deepest_block_output,
             grad_outputs=eye,
             retain_graph=False,
             create_graph=False,
@@ -438,10 +436,10 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
         )[0]  # (M, N, B, D=768)
         
         # Transpose to (N, B, M, D) for consistency with layer loop
-        projection_input_grad = projection_input_grad.permute(1, 2, 0, 3)  # (N, B, M, D=768)
+        block_output_grad = block_output_grad.permute(1, 2, 0, 3)  # (N, B, M, D=768)
         
-        # Initialize current_concept_vectors with normalized projection_input_grad
-        current_concept_vectors = F.normalize(projection_input_grad, dim=-1)  # (N, B, M, D)
+        # Initialize current_concept_vectors with normalized block_output_grad
+        current_concept_vectors = F.normalize(block_output_grad, dim=-1)  # (N, B, M, D)
         
         # ============================================================================
         # Main loop: Process all layers in reverse order (from deepest to shallowest)
