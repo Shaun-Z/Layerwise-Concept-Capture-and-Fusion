@@ -76,12 +76,16 @@ device = wrapper._get_device_for_call()
 
 # %%
 # Load a sample image from COCO dataset
-url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-image = preprocess(Image.open(requests.get(url, stream=True).raw)).unsqueeze(0).to(device)
+urls = [
+    "http://images.cocodataset.org/val2017/000000039769.jpg",
+    "http://images.cocodataset.org/val2017/000000001675.jpg",
+]
+images = [preprocess(Image.open(requests.get(url, stream=True).raw)) for url in urls]
+images = torch.stack(images, dim=0).to(device)
 
 # %%
 # Forward pass to extract features and capture block inputs for ALL layers
-output = wrapper(image)
+output = wrapper(images.clone().detach().requires_grad_(True))
 print(f"Model output shape: {output.shape}")
 print(f"Number of block inputs captured (all layers): {len(wrapper.block_ins)}")
 
@@ -90,26 +94,26 @@ print(f"Number of block inputs captured (all layers): {len(wrapper.block_ins)}")
 # This computes gradients for ALL layers, propagating from layer 11 -> 10 -> ... -> 0
 # For layer 11 (deepest), uses the provided concept_vectors (from classifier head)
 # For layer i < 11, uses the CLS gradient from layer i+1
-wrapper.dot_concept_vectors(concept_vectors, power=1)
+wrapper.dot_concept_vectors(concept_vectors, power=0)
 
 # %%
 
 # Print shapes for maps and sim_bms (only layer_indices)
 print(f"\nMaps and sim_bms (for layers {layer_indices}):")
-for i, (m, s) in enumerate(zip(wrapper.maps, wrapper.sim_bms)):
-    print(f"  Layer index {i}: map shape={m.shape}, sim_bm shape={s.shape}")
+for i, m in enumerate(wrapper.maps):
+    print(f"  Layer index {i}: map shape={m.shape}")
 
 # %%
 # wrapper.maps and wrapper.sim_bms already contain only data for layer_indices
 # They can be passed directly to visualize_layerwise_maps
 print(f"\n=== Visualizing attention maps for layers {layer_indices} ===")
-visualize_layerwise_maps(image,
+visualize_layerwise_maps(images,
                          wrapper.maps,
                          sim_bms=wrapper.sim_bms,
                          text_prompts=concept_names,
                          mean_std=((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-                        #  normalize_each_map=True
-                         )
+                         normalize_each_map=True
+                        )
 
 # %%
 # Aggregate maps across layer_indices
@@ -119,7 +123,7 @@ print(f"\nAggregated maps shape (from layers {layer_indices}): {maps_aggregated.
 # %%
 # Visualize aggregated maps
 print("\n=== Visualizing aggregated attention map ===")
-visualize(image, maps_aggregated, text_prompts=concept_names, mean_std=((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)))
+visualize(images, maps_aggregated, text_prompts=concept_names, mean_std=((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)))
 
 # %%
 # Reset the wrapper for next use

@@ -159,13 +159,16 @@ def visualize_layerwise_maps(
             if text_prompts is not None and j < len(text_prompts):
                 axes[i*num_concepts + j, 0].set_title(str(text_prompts[j]))
             for k in range(num_layers):
+                if sim_bms is not None:
+                    sim = sim_bms[k][0][i,j]
+                    power = sim_bms[k][1]
                 hm = heatmaps_np[k, i, j, :, :][:, :, None] # [H, W, 1]
                 hm_color = cv2.applyColorMap(hm, cv2.COLORMAP_JET)
                 overlay = (1 - alpha) * img_cv + alpha * hm_color
                 ov_rgb = cv2.cvtColor(overlay.astype("uint8"), cv2.COLOR_BGR2RGB)
                 axes[i*num_concepts + j, k + 1].imshow(ov_rgb)
                 axes[i*num_concepts + j, k + 1].axis("off")
-                axes[i*num_concepts + j, k + 1].set_title(f"Layer {k}\nsim {sim_bms[k][i,j]:.4f}" if sim_bms is not None else f"Layer {k}")
+                axes[i*num_concepts + j, k + 1].set_title(f"$\\mathrm{{{sim:.4f}}}^{{{power}}}$\nLayer {k}" if sim_bms is not None else f"Layer {k}")
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
         out_path = save_dir / f"heatmap_{title}.png"

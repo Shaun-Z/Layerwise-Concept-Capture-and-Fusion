@@ -129,13 +129,15 @@ class TorchvisionFastWrapper(CopyAttrWrapper):
             
             # Compute similarity with concept vectors
             sim_bm = torch.einsum('b d, m d -> b m', latent_feat, concept_vectors)  # (B, num_concepts)
+
+            self.sim_bms.append((sim_bm, power))
+
             if power == 0:
                 weight = torch.ones_like(sim_bm)
             else:
                 weight = torch.abs(sim_bm.clone().detach()).pow(power)
                 sim_bm *= weight  # (B, num_concepts)
             sim = sim_bm.sum(dim=0)  # (B, num_concepts) -> (num_concepts)
-            self.sim_bms.append(weight)
             
             # Compute gradients of sim w.r.t. attn_weight
             eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
@@ -234,13 +236,15 @@ class TorchvisionWrapper(CopyAttrWrapper):
             
             # Compute similarity with concept vectors
             sim_bm = torch.einsum('b d, m d -> b m', latent_feat, concept_vectors)  # (B, num_concepts)
+
+            self.sim_bms.append((sim_bm, power))
+
             if power == 0:
                 weight = torch.ones_like(sim_bm)
             else:
                 weight = torch.abs(sim_bm.clone().detach()).pow(power)
                 sim_bm *= weight  # (B, num_concepts)
             sim = sim_bm.sum(dim=0)  # (B, num_concepts) -> (num_concepts)
-            self.sim_bms.append(weight)
             
             # Compute gradients of sim w.r.t. attn_weight
             # attn_weight shape: (B*num_heads, N, N) from custom MHA forward
@@ -427,16 +431,16 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
                 # For other layers: concept_vectors is (M, B, N, D)
                 sim_bm = torch.einsum('b n d, m b n d -> b m', latent_feat, current_concept_vectors)  # (B, M)
             
+            # Store similarity weight only for layers in layer_indices
+            if layer_idx in aggregate_layer_set:
+                sim_bms_reversed.append((sim_bm, power))  # (B, M)
+
             if power == 0:
                 weight = torch.ones_like(sim_bm)
             else:
                 weight = torch.abs(sim_bm.clone().detach()).pow(power)
                 sim_bm = sim_bm * weight  # (B, M)
             sim = sim_bm.sum(dim=0)  # (B, M) -> (M,)
-            
-            # Store similarity weight only for layers in layer_indices
-            if layer_idx in aggregate_layer_set:
-                sim_bms_reversed.append(weight)  # (B, M)
             
             # Compute gradients of sim w.r.t. attn_weight and input_tokens for each concept
             eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
@@ -469,8 +473,8 @@ class TorchvisionFCVWrapper(CopyAttrWrapper):
             if token_grad is not None:
                 # token_grad shape: (M, B, N, D)
                 token_grads_reversed.append(token_grad)
-                # Use unnormalized token gradients as concept vectors for the next layer
-                current_concept_vectors = token_grad  # (M, B, N, D)
+                # Use normalized token gradients as concept vectors for the next layer
+                current_concept_vectors = F.normalize(token_grad, dim=-1)  # (M, B, N, D)
         
         # Reverse to get forward order (shallowest to deepest)
         self.attn_grads = attn_grads_reversed[::-1]
@@ -657,6 +661,11 @@ class TorchvisionCVWrapper(CopyAttrWrapper):
             
             # Compute similarity with concept vectors (keeping concept dimension)
             sim_bm = torch.einsum('b d, m d -> b m', latent_feat, current_concept_vectors)  # (B, M)
+
+            # Store similarity weight only for layers in layer_indices
+            if layer_idx in aggregate_layer_set:
+                sim_bms_reversed.append((sim_bm, power))  # (B, M)
+
             if power == 0:
                 weight = torch.ones_like(sim_bm)
             else:
@@ -664,9 +673,7 @@ class TorchvisionCVWrapper(CopyAttrWrapper):
                 sim_bm = sim_bm * weight  # (B, M)
             sim = sim_bm.sum(dim=0)  # (B, M) -> (M,)
             
-            # Store similarity weight only for layers in layer_indices
-            if layer_idx in aggregate_layer_set:
-                sim_bms_reversed.append(weight)  # (B, M)
+            
             
             # Compute gradients of sim w.r.t. attn_weight and input_cls for each concept
             eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
