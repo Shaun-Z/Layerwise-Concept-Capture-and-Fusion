@@ -133,11 +133,18 @@ def visualize_layerwise_maps(
     num_concepts = heatmaps.shape[2]
     num_layers = heatmaps.shape[0]
 
+    # Store original min/max values for annotation when normalize_each_map is True
+    original_min = None
+    original_max = None
+    
     if normalize_each_map:
         # Normalize each map independently along (H, W) dims
         # heatmaps shape: [num_layers, B, M, H, W]
         heatmaps_min = heatmaps.amin(dim=(-2, -1), keepdim=True)
         heatmaps_max = heatmaps.amax(dim=(-2, -1), keepdim=True)
+        # Store original min/max values (without keepdim) for annotation
+        original_min = heatmaps.amin(dim=(-2, -1)).detach().cpu().numpy()  # [num_layers, B, M]
+        original_max = heatmaps.amax(dim=(-2, -1)).detach().cpu().numpy()  # [num_layers, B, M]
         heatmaps = (heatmaps - heatmaps_min) / (heatmaps_max - heatmaps_min)
     else:
         # Global normalization (default behavior)
@@ -167,8 +174,19 @@ def visualize_layerwise_maps(
                 overlay = (1 - alpha) * img_cv + alpha * hm_color
                 ov_rgb = cv2.cvtColor(overlay.astype("uint8"), cv2.COLOR_BGR2RGB)
                 axes[i*num_concepts + j, k + 1].imshow(ov_rgb)
-                axes[i*num_concepts + j, k + 1].axis("off")
                 axes[i*num_concepts + j, k + 1].set_title(f"$\\mathrm{{{sim:.4f}}}^{{{power}}}$\nLayer {k}" if sim_bms is not None else f"Layer {k}")
+                # Add min/max annotation when normalize_each_map is True
+                if normalize_each_map and original_min is not None and original_max is not None:
+                    min_val = original_min[k, i, j]
+                    max_val = original_max[k, i, j]
+                    axes[i*num_concepts + j, k + 1].set_xlabel(f"[{min_val:.4f}, {max_val:.4f}]")
+                    # Hide axis ticks but keep xlabel visible
+                    axes[i*num_concepts + j, k + 1].set_xticks([])
+                    axes[i*num_concepts + j, k + 1].set_yticks([])
+                    for spine in axes[i*num_concepts + j, k + 1].spines.values():
+                        spine.set_visible(False)
+                else:
+                    axes[i*num_concepts + j, k + 1].axis("off")
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
         out_path = save_dir / f"heatmap_{title}.png"
