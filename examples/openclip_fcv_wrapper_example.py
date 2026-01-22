@@ -78,8 +78,8 @@ print(f"Number of sim_bms stored (only layer_indices): {len(wrapper.sim_bms)}")
 
 # Print shapes for maps and sim_bms (only layer_indices)
 print(f"\nMaps and sim_bms (for layers {layer_indices}):")
-for i, (m, s) in enumerate(zip(wrapper.maps, wrapper.sim_bms)):
-    print(f"  Layer index {i}: map shape={m.shape}, sim_bm shape={s.shape}")
+for i, m in enumerate(wrapper.maps):
+    print(f"  Layer index {i}: map shape={m.shape}")
 
 # %%
 # wrapper.maps and wrapper.sim_bms already contain only data for layer_indices
@@ -90,7 +90,7 @@ visualize_layerwise_maps(image,
                          sim_bms=wrapper.sim_bms,
                          text_prompts=prompts,
                          mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD),
-                         normalize_each_map=True
+                        #  normalize_each_map=True
                          )
 
 # %%
