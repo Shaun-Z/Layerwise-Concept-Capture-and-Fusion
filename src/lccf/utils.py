@@ -132,10 +132,6 @@ def visualize_layerwise_maps(
     num_images = heatmaps.shape[1]
     num_concepts = heatmaps.shape[2]
     num_layers = heatmaps.shape[0]
-
-    # Store original min/max values for annotation when normalize_each_map is True
-    original_min = None
-    original_max = None
     
     if normalize_each_map:
         # Normalize each map independently along (H, W) dims
@@ -145,7 +141,7 @@ def visualize_layerwise_maps(
         # Store original min/max values (without keepdim) for annotation
         original_min = heatmaps.amin(dim=(-2, -1)).detach().cpu().numpy()  # [num_layers, B, M]
         original_max = heatmaps.amax(dim=(-2, -1)).detach().cpu().numpy()  # [num_layers, B, M]
-        heatmaps = (heatmaps - heatmaps_min) / (heatmaps_max - heatmaps_min)
+        heatmaps = (heatmaps - heatmaps_min) / (heatmaps_max - heatmaps_min + 1e-8)
     else:
         # Global normalization (default behavior)
         heatmaps = (heatmaps - heatmaps.min()) / (heatmaps.max() - heatmaps.min())
@@ -176,7 +172,7 @@ def visualize_layerwise_maps(
                 axes[i*num_concepts + j, k + 1].imshow(ov_rgb)
                 axes[i*num_concepts + j, k + 1].set_title(f"$\\mathrm{{{sim:.4f}}}^{{{power}}}$\nLayer {k}" if sim_bms is not None else f"Layer {k}")
                 # Add min/max annotation when normalize_each_map is True
-                if normalize_each_map and original_min is not None and original_max is not None:
+                if normalize_each_map:
                     min_val = original_min[k, i, j]
                     max_val = original_max[k, i, j]
                     axes[i*num_concepts + j, k + 1].set_xlabel(f"[{min_val:.4f}, {max_val:.4f}]")
