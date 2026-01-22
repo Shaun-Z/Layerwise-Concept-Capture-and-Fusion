@@ -596,7 +596,7 @@ class TimmCVWrapper(CopyAttrWrapper):
         # attn_weights: (B*num_heads, 1, N) from Pseudo_Attention_forward
         self.attn_weight = module._attn_weights
 
-    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 1):
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 0):
         """Compute gradient-based concept activation maps using pseudo mode.
         
         Backpropagation starts from the last layer using the provided concept_vectors
@@ -688,7 +688,6 @@ class TimmCVWrapper(CopyAttrWrapper):
                 retain_graph=True,
                 create_graph=False,
                 is_grads_batched=True,
-                allow_unused=True
             )
             
             attn_grad = grads[0]  # (M, B*num_heads, 1, N)
