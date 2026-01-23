@@ -90,7 +90,7 @@ visualize_layerwise_maps(image,
                          sim_bms=wrapper.sim_bms,
                          text_prompts=prompts,
                          mean_std=(OPENAI_DATASET_MEAN, OPENAI_DATASET_STD),
-                        #  normalize_each_map=True
+                         normalize_each_map=True
                          )
 
 # %%
