@@ -10,20 +10,19 @@ import matplotlib.pyplot as plt
 
 from einops import rearrange
 
-def minmax_norm(x: torch.Tensor, dim: Optional[int] = None, eps: float = 1e-8) -> torch.Tensor:
+def minmax_norm(x: torch.Tensor, dim: Optional[int] = None) -> torch.Tensor:
     """Min-max normalize a tensor along a specified dimension.
     
     Args:
         x (torch.Tensor): Input tensor to normalize.
         dim (int, optional): Dimension along which to compute min and max. Defaults to None.
-        eps (float, optional): Small value to avoid division by zero. Defaults to 1e-8.
 
     Returns:
         torch.Tensor: Min-max normalized tensor.
     """
     xmin = torch.amin(x, dim=dim, keepdim=True)
     xmax = torch.amax(x, dim=dim, keepdim=True)
-    return (x - xmin) / (xmax - xmin + eps)
+    return (x - xmin) / (xmax - xmin)
 
 def _to_pil(image: torch.Tensor | Image.Image, target_wh: tuple[int, int], mean: tuple[float, float, float], std: tuple[float, float, float]) -> Image.Image:
     if isinstance(image, Image.Image):
@@ -141,7 +140,7 @@ def visualize_layerwise_maps(
         # Store original min/max values (without keepdim) for annotation
         original_min = heatmaps.amin(dim=(-2, -1)).detach().cpu().numpy()  # [num_layers, B, M]
         original_max = heatmaps.amax(dim=(-2, -1)).detach().cpu().numpy()  # [num_layers, B, M]
-        heatmaps = (heatmaps - heatmaps_min) / (heatmaps_max - heatmaps_min + 1e-8)
+        heatmaps = (heatmaps - heatmaps_min) / (heatmaps_max - heatmaps_min)
     else:
         # Global normalization (default behavior)
         heatmaps = (heatmaps - heatmaps.min()) / (heatmaps.max() - heatmaps.min())
