@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Literal
 from pathlib import Path
 
 import cv2
@@ -41,7 +41,8 @@ def visualize(
     text_prompts: Optional[List[str]] = None,
     save_dir: Optional[Path] = None,
     title: Optional[str] = None,
-):
+    format: Literal["png", "svg", "pdf"] = "png",
+    ):
     """
     Overlay heatmaps on the input image.
     Args:
@@ -86,7 +87,7 @@ def visualize(
     plt.tight_layout()
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
-        out_path = save_dir / f"heatmap_{title}.png"
+        out_path = save_dir / f"heatmap_{title}.{format}"
         # Image.fromarray(ov_rgb.astype("uint8")).save(out_path)
         plt.savefig(out_path)
         plt.close()
@@ -103,7 +104,8 @@ def visualize_layerwise_maps(
         text_prompts: Optional[List[str]] = None,
         save_dir: Optional[Path] = None,
         title: Optional[str] = None,
-        normalize_each_map: bool = False
+        normalize_each_map: bool = False,
+        format: Literal["png", "svg", "pdf"] = "png",
     ):
     """Visualize the stored maps across all requested layers.
     Args:
@@ -184,7 +186,7 @@ def visualize_layerwise_maps(
                     axes[i*num_concepts + j, k + 1].axis("off")
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
-        out_path = save_dir / f"heatmap_{title}.png"
+        out_path = save_dir / f"heatmap_{title}.{format}"
         # Image.fromarray(ov_rgb.astype("uint8")).save(out_path)
         plt.savefig(out_path)
         plt.close()
