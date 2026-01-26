@@ -483,7 +483,7 @@ class OpenCLIPFCVWrapper(CopyAttrWrapper):
             
             # Store attention gradient
             if attn_grad is not None:
-                attn_grad = torch.clamp(attn_grad, min=0.)
+                # attn_grad = torch.clamp(attn_grad, min=0.)
                 attn_grad = rearrange(attn_grad, 'm (b h) n1 n2 -> m b h n1 n2', h=self.num_heads)
                 attn_grads_reversed.append(attn_grad)
                 

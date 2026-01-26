@@ -455,7 +455,7 @@ class TimmFCVWrapper(CopyAttrWrapper):
             
             # Store attention gradient
             if attn_grad is not None:
-                attn_grad = torch.clamp(attn_grad, min=0.)
+                # attn_grad = torch.clamp(attn_grad, min=0.)
                 attn_grads_reversed.append(attn_grad)
                 
                 # Store explanation map only for layers in layer_indices
