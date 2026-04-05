@@ -5,13 +5,14 @@ from .types import TimmViT, TorchViT, OpenCLIPViT
 from .wrap import CopyAttrWrapper
 # Import the specific backend wrapper (if it exists)
 from .backends.openclip.wrapper import OpenCLIPWrapper, OpenCLIPFastWrapper, OpenCLIPCVWrapper, OpenCLIPFCVWrapper
-from .backends.timm.wrapper import TimmWrapper, TimmFastWrapper, TimmCVWrapper, TimmFCVWrapper
+from .backends.timm.wrapper import TimmWrapper, TimmFastWrapper, TimmCVWrapper, TimmFCVWrapper, TimmFCVHybridWrapper
 from .backends.torchvision.wrapper import TorchvisionWrapper, TorchvisionFastWrapper, TorchvisionCVWrapper, TorchvisionFCVWrapper
 
 def detect_and_wrap(model: Any,
                     layer_indices: Optional[List[int]] = None,
                     prefer: Optional[str] = None,
-                    mode: Literal["standard", "fast", "cv", "fcv"] = "standard",
+                    mode: Literal["standard", "fast", "cv", "fcv", "fcv_hybrid"] = "standard",
+                    top_k: int = 32,
                     include_private: bool = False) -> CopyAttrWrapper:
     """
     Simply determines and returns a specific backend CopyAttrWrapper instance based on isinstance.
@@ -42,6 +43,8 @@ def detect_and_wrap(model: Any,
             return TimmCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
         elif mode == "fcv":
             return TimmFCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fcv_hybrid":
+            return TimmFCVHybridWrapper(model, layer_indices=layer_indices, top_k=top_k, include_private=include_private)
         else:
             raise ValueError(f"Unknown mode: {mode}")
     if prefer == "torchvision" and isinstance(model, TorchViT):
@@ -77,6 +80,8 @@ def detect_and_wrap(model: Any,
             return TimmCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
         elif mode == "fcv":
             return TimmFCVWrapper(model, layer_indices=layer_indices, include_private=include_private)
+        elif mode == "fcv_hybrid":
+            return TimmFCVHybridWrapper(model, layer_indices=layer_indices, top_k=top_k, include_private=include_private)
         else:
             raise ValueError(f"Unknown mode: {mode}")
     if isinstance(model, TorchViT):

@@ -499,6 +499,120 @@ class TimmFCVWrapper(CopyAttrWrapper):
         return maps
 
 
+class TimmFCVHybridWrapper(TimmFCVWrapper):
+    """
+    Hybrid aggregation wrapper: CLS token + top-K attention-selected tokens.
+
+    Instead of summing over ALL N tokens (full token-wise, TimmFCVWrapper) or
+    using only CLS (CLS-only), this wrapper selects the CLS token plus the
+    top-K patch tokens ranked by their CLS attention weight at each layer.
+
+    This provides a middle ground between CLS-only scoring (cheap but misses
+    information in deep ViTs) and full token-wise scoring (accurate but O(N)
+    cost per layer).
+
+    Args:
+        model: A timm VisionTransformer model.
+        layer_indices: Which layers to aggregate maps from.
+        top_k: Number of top patch tokens to include alongside CLS. Default: 32.
+        include_private: Whether to include private attributes.
+    """
+    def __init__(self, model: Any, layer_indices: Optional[List[int]] = None,
+                 top_k: int = 32, include_private: bool = False):
+        super().__init__(model, layer_indices=layer_indices, include_private=include_private)
+        self.top_k = top_k
+
+    def dot_concept_vectors(self, concept_vectors: torch.Tensor, power: int = 0):
+        """Compute concept activation maps using CLS + top-K token hybrid scoring.
+
+        For each layer, instead of einsum over all N tokens, we:
+        1. Always include the CLS token (index 0)
+        2. Select the top-K patch tokens by CLS attention weight
+        3. Compute similarity only over these K+1 tokens
+        """
+        w = h = int(math.sqrt(self.block_ins[0].shape[1] - 1))
+        K = min(self.top_k, w * h)  # cap at total patch count
+
+        sorted_indices = sorted(enumerate(self._requested_hook_indices), key=lambda x: x[1], reverse=True)
+
+        attn_grads_reversed = []
+        token_grads_reversed = []
+        maps_reversed = []
+        sim_bms_reversed = []
+
+        aggregate_layer_set = set(self._aggregate_layer_indices)
+
+        current_concept_vectors = F.normalize(concept_vectors, dim=-1)
+        is_deepest = True
+
+        for enum_idx, layer_idx in sorted_indices:
+            self.zero_grad()
+            input_tokens = self.block_ins[enum_idx]   # (B, N, D)
+            block_output = self.block_outs[enum_idx]   # (B, N, D)
+            attn_weight = self.attn_weights[enum_idx]  # (B, num_heads, N, N)
+
+            latent_feat = F.normalize(block_output, dim=-1)  # (B, N, D)
+
+            # --- Hybrid scoring: CLS + top-K tokens via mask ---
+            # Build a binary mask (B, N) selecting CLS (idx 0) + top-K patch tokens
+            B_size, N_size = latent_feat.shape[:2]
+            cls_attn = attn_weight[:, :, 0, 1:].mean(dim=1).detach()  # (B, N-1)
+            _, topk_idx = cls_attn.topk(K, dim=-1)  # (B, K)
+
+            token_mask = torch.zeros(B_size, N_size, device=latent_feat.device)
+            token_mask[:, 0] = 1.0  # always include CLS
+            token_mask.scatter_(1, topk_idx + 1, 1.0)  # +1 to skip CLS position
+            token_mask = token_mask.unsqueeze(-1)  # (B, N, 1)
+
+            # Masked features keep the computation graph alive
+            masked_feat = latent_feat * token_mask  # (B, N, D)
+
+            if is_deepest:
+                sim_bm = torch.einsum('b n d, m d -> b m', masked_feat, current_concept_vectors)
+                is_deepest = False
+            else:
+                sim_bm = torch.einsum('b n d, m b n d -> b m', masked_feat, current_concept_vectors)
+
+            if layer_idx in aggregate_layer_set:
+                sim_bms_reversed.append((sim_bm, power))
+
+            if power == 0:
+                weight = torch.ones_like(sim_bm)
+            else:
+                weight = torch.abs(sim_bm.clone().detach()).pow(power)
+                sim_bm = sim_bm * weight
+            sim = sim_bm.sum(dim=0)
+
+            eye = torch.eye(sim.numel(), device=sim.device).view(sim.numel(), *sim.shape)
+            grads = torch.autograd.grad(
+                outputs=sim,
+                inputs=[attn_weight, input_tokens],
+                grad_outputs=eye,
+                retain_graph=True,
+                create_graph=False,
+                is_grads_batched=True
+            )
+
+            attn_grad = grads[0]
+            token_grad = grads[1]
+
+            if attn_grad is not None:
+                attn_grads_reversed.append(attn_grad)
+                if layer_idx in aggregate_layer_set:
+                    image_relevance = attn_grad.mean(dim=2).mean(dim=-2)[..., 1:]
+                    expl_map = rearrange(image_relevance, 'm b (h w) -> h w b m', w=w, h=h)
+                    maps_reversed.append(expl_map)
+
+            if token_grad is not None:
+                token_grads_reversed.append(token_grad)
+                current_concept_vectors = F.normalize(token_grad, dim=-1)
+
+        self.attn_grads = attn_grads_reversed[::-1]
+        self.token_grads = token_grads_reversed[::-1]
+        self.maps = maps_reversed[::-1]
+        self.sim_bms = sim_bms_reversed[::-1]
+
+
 class TimmCVWrapper(CopyAttrWrapper):
     """
     A timm-specific wrapper that propagates gradients from the last layer backward through
