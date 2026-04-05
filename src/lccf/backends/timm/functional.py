@@ -13,6 +13,7 @@ def CV_Pseudo_Attention_forward(
     self,
     x: Tensor,
     attn_mask: Optional[Tensor] = None,
+    **kwargs,
 ) -> Tensor:
     """
     Pseudo attention forward for CVWrapper that stops gradient flow through attention weights.
@@ -91,6 +92,7 @@ def Pseudo_Attention_forward(
     self,
     x: Tensor,
     attn_mask: Optional[Tensor] = None,
+    **kwargs,
 ) -> Tensor:
     """
     Pseudo attention forward that only attends to the CLS token (first token).
@@ -153,6 +155,7 @@ def Attention_forward(
     self,
     x: Tensor,
     attn_mask: Optional[Tensor] = None,
+    **kwargs,
 ) -> Tensor:
     """
     Modified attention forward that stores attention weights and returns output.
